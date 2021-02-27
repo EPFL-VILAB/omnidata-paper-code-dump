@@ -20,9 +20,22 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-from data.taskonomy_replica_gso_dataset import TaskonomyReplicaGsoDataset
+from data.taskonomy_replica_gso_dataset import TaskonomyReplicaGsoDataset, REPLICA_BUILDINGS
 from models.unet import UNet
+from models.multi_task_model import MultiTaskModel
 from losses import masked_l1_loss, compute_grad_norm_losses
+
+def building_in_gso(building):
+    return building.__contains__('-') and building.split('-')[0] in REPLICA_BUILDINGS
+
+def building_in_replica(building):
+    return building in REPLICA_BUILDINGS
+
+def building_in_hypersim(building):
+    return building.startswith('ai_')
+
+def building_in_taskonomy(building):
+    return building not in REPLICA_BUILDINGS and not building.startswith('ai_') and not building.__contains__('-')
 
 
 class ConsistentDepth(pl.LightningModule):
@@ -38,9 +51,11 @@ class ConsistentDepth(pl.LightningModule):
                  taskonomy_root,
                  replica_root,
                  gso_root,
+                 hypersim_root,
                  use_taskonomy,
                  use_replica,
                  use_gso,
+                 use_hypersim,
                  **kwargs):
         super().__init__()
 
@@ -64,16 +79,20 @@ class ConsistentDepth(pl.LightningModule):
         self.taskonomy_root = taskonomy_root
         self.replica_root = replica_root
         self.gso_root = gso_root
+        self.hypersim_root = hypersim_root
         self.use_taskonomy = use_taskonomy
         self.use_replica = use_replica
         self.use_gso = use_gso
+        self.use_hypersim = use_hypersim
         self.save_debug_info_on_error = False
 
         self.setup_datasets()
         
         self.val_samples = self.select_val_samples_for_datasets()
 
-        self.model = UNet(in_channels=3, out_channels=1)
+        # self.model = UNet(in_channels=3, out_channels=1)
+        self.model = MultiTaskModel(tasks=['depth_zbuffer'], backbone='hrnet_w48', head='hrnet', pretrained=True, dilated=False)
+
         if self.pretrained_weights_path is not None:
             checkpoint = torch.load(self.pretrained_weights_path)
             # In case we load a checkpoint from this LightningModule
@@ -101,7 +120,7 @@ class ConsistentDepth(pl.LightningModule):
             '--lr', type=float, default=1e-3,
             help='Learning rate. (default: 1e-5)')
         parser.add_argument(
-            '--lr_step', type=int, default=400,
+            '--lr_step', type=int, default=40,
             help='Number of epochs after which to decrease learning rate. (default: 1)')
         parser.add_argument(
             '--batch_size', type=int, default=4,
@@ -123,32 +142,40 @@ class ConsistentDepth(pl.LightningModule):
             '--gso_root', type=str, default='/scratch/ainaz/replica-google-objects',
             help='Root directory of GSO dataset.')
         parser.add_argument(
+            '--hypersim_root', type=str, default='/scratch/ainaz/hypersim-dataset2/evermotion/scenes',
+            help='Root directory of hypersim dataset.')
+        parser.add_argument(
             '--use_taskonomy', action='store_true', default=True,
             help='Set to use taskonomy dataset.')
         parser.add_argument(
             '--use_replica', action='store_true', default=True,
             help='Set to use replica dataset.')
         parser.add_argument(
-            '--use_gso', action='store_true', default=True,
+            '--use_gso', action='store_true', default=False,
             help='Set to user GSO dataset.')
+        parser.add_argument(
+            '--use_hypersim', action='store_true', default=True,
+            help='Set to user hypersim dataset.')
         return parser
 
     def setup_datasets(self):
         self.num_positive = 1 
 
-        tasks = ['rgb', 'depth_zbuffer', 'mask_valid']
+        tasks = ['rgb', 'normal', 'segment_semantic', 'depth_zbuffer', 'mask_valid']
 
         self.train_datasets = []
         if self.use_taskonomy: self.train_datasets.append('taskonomy')
         if self.use_replica: self.train_datasets.append('replica')
         if self.use_gso: self.train_datasets.append('gso')
+        if self.use_hypersim: self.train_datasets.append('hypersim')
 
-        self.val_datasets = ['taskonomy', 'replica', 'gso']
+        self.val_datasets = ['taskonomy', 'replica', 'hypersim']
 
         opt_train = TaskonomyReplicaGsoDataset.Options(
             taskonomy_data_path=self.taskonomy_root,
             replica_data_path=self.replica_root,
             gso_data_path=self.gso_root,
+            hypersim_data_path=self.hypersim_root,
             tasks=tasks,
             datasets=self.train_datasets,
             split='train',
@@ -156,9 +183,7 @@ class ConsistentDepth(pl.LightningModule):
             transform='DEFAULT',
             image_size=self.image_size,
             num_positive=self.num_positive,
-            normalize_rgb=False,
-            load_building_meshes=False,
-            force_refresh_tmp = False,
+            normalize_rgb=True,
             randomize_views=True
         )
         self.trainset = TaskonomyReplicaGsoDataset(options=opt_train)
@@ -167,6 +192,7 @@ class ConsistentDepth(pl.LightningModule):
             taskonomy_data_path=self.taskonomy_root,
             replica_data_path=self.replica_root,
             gso_data_path=self.gso_root,
+            hypersim_data_path=self.hypersim_root,
             split='val',
             taskonomy_variant=self.taskonomy_variant,
             tasks=tasks,
@@ -174,15 +200,13 @@ class ConsistentDepth(pl.LightningModule):
             transform='DEFAULT',
             image_size=self.image_size,
             num_positive=self.num_positive,
-            normalize_rgb=False,
-            load_building_meshes=False,
-            force_refresh_tmp = False,
+            normalize_rgb=True,
             randomize_views=False
         )
         self.valset = TaskonomyReplicaGsoDataset(options=opt_val)
         
         # Shuffle, so that truncated validation sets are randomly sampled, but the same throughout training
-        self.valset.randomize_order(seed=20)
+        self.valset.randomize_order(seed=99)
 
         print('Loaded training and validation sets:')
         print(f'Train set contains {len(self.trainset)} samples.')
@@ -201,7 +225,7 @@ class ConsistentDepth(pl.LightningModule):
         )
 
     def forward(self, x):
-        return self.model(x)
+        return self.model(x)['depth_zbuffer']
 
     def training_step(self, batch, batch_idx):
         res = self.shared_step(batch, train=True)
@@ -286,19 +310,26 @@ class ConsistentDepth(pl.LightningModule):
     def select_val_samples_for_datasets(self):
         frls = 0
         val_imgs = defaultdict(list)
-        while len(val_imgs['replica']) + len(val_imgs['gso']) + len(val_imgs['taskonomy']) < 90:
-            idx = random.randint(0, len(self.valset))
+        while len(val_imgs['replica']) + len(val_imgs['taskonomy']) + \
+             len(val_imgs['hypersim']) + len(val_imgs['gso']) < 95:
+            idx = random.randint(0, len(self.valset) - 1)
             example = self.valset[idx]
             building = example['positive']['building']
-            if building.__contains__('-') and len(val_imgs['gso']) < 40:
-                val_imgs['gso'].append(idx)
-            elif building.__contains__('_') and not building.__contains__('-') and len(val_imgs['replica']) < 30:
-                if building.startswith('frl') and frls > 10:
+            print(len(val_imgs['replica']), len(val_imgs['taskonomy']), len(val_imgs['hypersim']), len(val_imgs['gso']), building)
+            
+            if building_in_hypersim(building) and len(val_imgs['hypersim']) < 40:
+                val_imgs['hypersim'].append(idx)
+
+            elif building_in_replica(building) and len(val_imgs['replica']) < 25:
+                if building.startswith('frl') and frls > 15:
                     continue
                 if building.startswith('frl'): frls += 1
                 val_imgs['replica'].append(idx)
 
-            elif len(val_imgs['taskonomy']) < 20:
+            elif building_in_gso(building) and len(val_imgs['gso']) < 20:
+                val_imgs['gso'].append(idx)
+
+            elif building_in_taskonomy(building) and len(val_imgs['taskonomy']) < 30:
                 val_imgs['taskonomy'].append(idx)
         return val_imgs
 
@@ -316,7 +347,7 @@ class ConsistentDepth(pl.LightningModule):
         for dataset in self.val_datasets:
             for img_idx in self.val_samples[dataset]:
                 example = self.valset[img_idx]
-                num_positive = example['num_positive']
+                num_positive = self.num_positive
                 rgb_pos = example['positive']['rgb'].to(self.device)
                 depth_gt_pos = example['positive']['depth_zbuffer']
 
@@ -328,20 +359,20 @@ class ConsistentDepth(pl.LightningModule):
                 depth_gt_pos = depth_gt_pos.unsqueeze(axis=0)
 
                 with torch.no_grad():
-                    depth_preds_pos = self.model.forward(rgb_pos)
+                    depth_preds_pos = self.model.forward(rgb_pos)['depth_zbuffer']
 
                 for pos_idx in range(num_positive):
                     rgb = rgb_pos[pos_idx].permute(1, 2, 0).detach().cpu().numpy()
-                    rgb = wandb.Image(rgb, caption=f'RGB I{img_idx} V{pos_idx}')
+                    rgb = wandb.Image(rgb, caption=f'RGB I{img_idx}')
                     all_imgs[f'rgb-{dataset}'].append(rgb)
 
                     depth_gt = depth_gt_pos[pos_idx].permute(1, 2, 0).detach().cpu().numpy()
-                    depth_gt = wandb.Image(depth_gt, caption=f'GT I{img_idx} V{pos_idx}')
-                    all_imgs[f'gt-{dataset}'].append(depth_gt)
+                    depth_gt = wandb.Image(depth_gt, caption=f'GT-Depth I{img_idx}')
+                    all_imgs[f'gt-depth-{dataset}'].append(depth_gt)
 
                     depth_pred = depth_preds_pos[pos_idx].permute(1, 2, 0).detach().cpu().numpy()
-                    depth_pred = wandb.Image(depth_pred, caption=f'Pred I{img_idx} V{pos_idx}')
-                    all_imgs[f'pred-{dataset}'].append(depth_pred)
+                    depth_pred = wandb.Image(depth_pred, caption=f'Pred-Depth I{img_idx}')
+                    all_imgs[f'pred-depth-{dataset}'].append(depth_pred)
 
         self.logger.experiment.log(all_imgs, step=self.global_step)
 
@@ -355,7 +386,7 @@ class ConsistentDepth(pl.LightningModule):
             rgb = self.valset.transform['rgb'](rgb).to(self.device)
 
             with torch.no_grad():
-                depth_pred = self.model.forward(rgb.unsqueeze(0))[0]
+                depth_pred = self.model.forward(rgb.unsqueeze(0))['depth_zbuffer'][0]
 
             rgb = rgb.permute(1, 2, 0).detach().cpu().numpy()
             rgb = wandb.Image(rgb, caption=f'RGB OOD {img_idx}')
@@ -368,8 +399,8 @@ class ConsistentDepth(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate, weight_decay=2e-6, amsgrad=True)
-        # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self.lr_step)
-        return optimizer #, [scheduler]
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=40)
+        return [optimizer], [scheduler]
 
 
 def save_model_and_batch_on_error(checkpoint_function, save_path_prefix='.'):

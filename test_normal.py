@@ -25,7 +25,9 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from data.taskonomy_replica_gso_dataset import TaskonomyReplicaGsoDataset
 from data.nyu_dataset import NYUDataset, build_mask_for_eval, mask_val
+from data.OASIS_dataset import OASISDataset
 from models.unet import UNet
+from models.multi_task_model import MultiTaskModel
 from losses import masked_l1_loss, compute_grad_norm_losses
 from evaluation_metrics import get_metrics
 
@@ -42,11 +44,13 @@ class NormalTest(pl.LightningModule):
                  gso_root,
                  hypersim_root,
                  nyu_root,
+                 oasis_root,
                  use_taskonomy,
                  use_replica,
                  use_gso,
                  use_hypersim,
                  use_nyu,
+                 use_oasis,
                  model_name,
                  **kwargs):
         super().__init__()
@@ -70,19 +74,23 @@ class NormalTest(pl.LightningModule):
         self.gso_root = gso_root
         self.hypersim_root = hypersim_root
         self.nyu_root = nyu_root
+        self.oasis_root = oasis_root
         self.use_taskonomy = use_taskonomy
         self.use_replica = use_replica
         self.use_gso = use_gso
         self.use_hypersim = use_hypersim
         self.use_nyu = use_nyu
+        self.use_oasis = use_oasis
         self.model_name = model_name
         self.save_debug_info_on_error = False
 
         self.setup_datasets()
 
         self.model = UNet(in_channels=3, out_channels=3)
+        # self.model = MultiTaskModel(tasks=['normal', 'segment_semantic'], backbone='hrnet_w48', pretrained=False)
+
         if self.pretrained_weights_path is not None:
-            checkpoint = torch.load(self.pretrained_weights_path)
+            checkpoint = torch.load(self.pretrained_weights_path, map_location='cuda:0')
             # In case we load a checkpoint from this LightningModule
             if 'state_dict' in checkpoint:
                 state_dict = {}
@@ -129,6 +137,9 @@ class NormalTest(pl.LightningModule):
             '--nyu_root', type=str, default='/datasets/nyu_official',
             help='Root directory of NYU dataset.')
         parser.add_argument(
+            '--oasis_root', type=str, default='/scratch/ainaz/OASIS/OASIS_test/image',
+            help='Root directory of OASIS dataset.')
+        parser.add_argument(
             '--use_taskonomy', action='store_true', default=False,
             help='Set to use taskonomy dataset.')
         parser.add_argument(
@@ -136,13 +147,16 @@ class NormalTest(pl.LightningModule):
             help='Set to use replica dataset.')
         parser.add_argument(
             '--use_gso', action='store_true', default=False,
-            help='Set to user GSO dataset.')
+            help='Set to use GSO dataset.')
         parser.add_argument(
             '--use_hypersim', action='store_true', default=False,
-            help='Set to user hypersim dataset.')
+            help='Set to use hypersim dataset.')
         parser.add_argument(
-            '--use_nyu', action='store_true', default=True,
-            help='Set to user NYU dataset.')
+            '--use_nyu', action='store_true', default=False,
+            help='Set to use NYU dataset.')
+        parser.add_argument(
+            '--use_oasis', action='store_true', default=True,
+            help='Set to use OASIS dataset.')
         parser.add_argument(
             '--model_name', type=str, default='taskonomy-tiny',
             help='Name of model used for testing.')
@@ -158,10 +172,16 @@ class NormalTest(pl.LightningModule):
         if self.use_gso: self.test_datasets.append('gso')
         if self.use_hypersim: self.test_datasets.append('hypersim')
         if self.use_nyu: self.test_datasets.append('nyu')
+        if self.use_oasis: self.test_datasets.append('oasis')
 
         if self.use_nyu:
-            self.nyu_dataloader = NYUDataset(root=self.nyu_root, type='val', task='normal', output_size=self.image_size)
+            self.nyu_dataloader = NYUDataset(root=self.nyu_root, type='val', \
+                task='normal', output_size=self.image_size)
             self.testset = self.nyu_dataloader.imgs
+
+        elif self.use_oasis:
+            self.oasis_dataloader = OASISDataset(root=self.oasis_root, output_size=self.image_size, normalized=False)
+            self.testset = self.oasis_dataloader.imgs
 
         else:
             opt_test = TaskonomyReplicaGsoDataset.Options(
@@ -192,6 +212,12 @@ class NormalTest(pl.LightningModule):
     def test_dataloader(self):
         if self.use_nyu:
             return self.nyu_dataloader
+        elif self.use_oasis:
+            # return self.oasis_dataloader
+            return DataLoader(
+                self.oasis_dataloader, batch_size=self.batch_size, shuffle=False,
+                num_workers=self.num_workers, pin_memory=False
+            )
         else:
             return DataLoader(
                 self.testset, batch_size=self.batch_size, shuffle=False,
@@ -209,6 +235,11 @@ class NormalTest(pl.LightningModule):
             mask_valid = build_mask_for_eval(target=normal_gt.cpu(), val=mask_val['normal'])
             normal_preds = self(rgb)
             normal_preds = torch.clamp(normal_preds, 0, 1)
+
+        elif self.use_oasis:
+            rgb = batch
+            normal_preds = self(rgb) #['normal']
+            normal_preds = torch.clamp(normal_preds, 0, 1)
             
         else:     
             rgb = batch['positive']['rgb']
@@ -224,26 +255,26 @@ class NormalTest(pl.LightningModule):
         # save samples
         if batch_idx % 4 == 0:
             pred = np.uint8(255 * normal_preds[0].cpu().permute((1, 2, 0)).numpy())
-            gt = np.uint8(255 * normal_gt[0].cpu().permute((1, 2, 0)).numpy())
-            rgb = np.uint8(255 * rgb[0].cpu().permute((1, 2, 0)).numpy())
-            mask = np.uint8(255 * mask_valid[0].cpu().permute((1, 2, 0)).numpy())
+            # gt = np.uint8(255 * normal_gt[0].cpu().permute((1, 2, 0)).numpy())
+            # rgb = np.uint8(255 * rgb[0].cpu().permute((1, 2, 0)).numpy())
+            # mask = np.uint8(255 * mask_valid[0].cpu().permute((1, 2, 0)).numpy())
 
-            # transform = transforms.Resize(512, Image.BILINEAR)
-            im = Image.fromarray(rgb)
-            im.save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_rgb.png'))
-            im = Image.fromarray(gt)
-            im.save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_gt.png'))
+            transform = transforms.Resize(512, Image.BILINEAR)
+            # im = Image.fromarray(rgb)
+            # transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_rgb.png'))
+            # im = Image.fromarray(gt)
+            # im.save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_gt.png'))
             im = Image.fromarray(pred)
-            im.save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_{self.model_name}_pred.png'))
-            im = Image.fromarray(mask)
-            im.save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_mask.png'))
+            transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_{self.model_name}_pred.png'))
+            # im = Image.fromarray(mask)
+            # im.save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_mask.png'))
 
 
-        for pred, target, mask in zip(normal_preds, normal_gt, mask_valid):
-            metrics = get_metrics(pred.cpu().unsqueeze(0), target.cpu().unsqueeze(0), \
-                masks=mask.cpu().unsqueeze(0), task='normal')
-            for metric_name, metric_val in metrics.items(): 
-                self.metrics[metric_name].push(metric_val)
+        # for pred, target, mask in zip(normal_preds, normal_gt, mask_valid):
+        #     metrics = get_metrics(pred.cpu().unsqueeze(0), target.cpu().unsqueeze(0), \
+        #         masks=mask.cpu().unsqueeze(0), task='normal')
+        #     for metric_name, metric_val in metrics.items(): 
+        #         self.metrics[metric_name].push(metric_val)
     
 
     def make_valid_mask(self, mask_float, max_pool_size=4, return_small_mask=False):

@@ -517,10 +517,28 @@ def hrnet_w18(pretrained=False):
     
     model = HighResolutionNet(hrnet_cfg)
     if pretrained:
-        pretrained_weights = os.path.join('/scratch/ainaz/omnidata2/pretrained', 'hrnet_w18_small_model_v2.pth')
+        pretrained_weights = os.path.join('/scratch/ainaz/omnidata2/pretrained', 'hrnet_w18_small_model_v1.pth')
         if os.path.exists(pretrained_weights):
             model.init_weights(pretrained_weights)
             print("Pretrained model loaded!!!")
+        else:
+            raise AssertionError('Error: No pretrained weights found for HRNet18. \n Download weights from https://github.com/HRNet/HRNet-Image-Classification and save them to {}'.format(pretrained_weights))
+
+    return model
+
+def hrnet_w32(pretrained=False):
+    import yaml
+    hrnet_cfg = os.path.join(os.path.dirname(__file__), 'hrnet_w32.yml')
+     
+    with open(hrnet_cfg, 'r') as stream:
+        hrnet_cfg = yaml.safe_load(stream)
+
+    model = HighResolutionNet(hrnet_cfg)
+    if pretrained:
+        pretrained_weights = os.path.join('/scratch/ainaz/omnidata2/pretrained', 'hrnet_w32-36af842e.pth')
+        if os.path.exists(pretrained_weights):
+            model.init_weights(pretrained_weights)
+            print("Pretrained hrnet_w32 loaded!!!")
         else:
             raise AssertionError('Error: No pretrained weights found for HRNet18. \n Download weights from https://github.com/HRNet/HRNet-Image-Classification and save them to {}'.format(pretrained_weights))
 
@@ -538,7 +556,7 @@ def hrnet_w48(pretrained=False):
         pretrained_weights = os.path.join('/scratch/ainaz/omnidata2/pretrained', 'hrnet_w48-8ef0771d.pth')
         if os.path.exists(pretrained_weights):
             model.init_weights(pretrained_weights)
-            print("Pretrained model loaded!!!")
+            print("Pretrained hrnet_w48 loaded!!!")
         else:
             raise AssertionError('Error: No pretrained weights found for HRNet18. \n Download weights from https://github.com/HRNet/HRNet-Image-Classification and save them to {}'.format(pretrained_weights))
 

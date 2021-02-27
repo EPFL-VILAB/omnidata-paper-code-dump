@@ -8,45 +8,54 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append('../')
 
-from seg_hrnet_multitask import hrnet_w18, hrnet_w48, HighResolutionHead
+from seg_hrnet_multitask import hrnet_w18, hrnet_w32, hrnet_w48, HighResolutionHead, HighResolutionFuse
 from resnet import resnet18, resnet50
+from resnet_dilated import ResnetDilated
 from aspp import DeepLabHead
-from data.segment_instance import COMBINED_CLASS_LABELS
+from data.taskonomy_replica_gso_dataset import N_OUTPUTS
 
 
-def get_backbone(name):
+def get_backbone(name, pretrained=True, dilated=False, fuse_hrnet=False):
     if name == 'resnet18':
-        backbone = resnet18(pretrained=True)
+        backbone = resnet18(pretrained=pretrained)
         backbone_channels = 512
     
     elif name == 'resnet50':
-        backbone = resnet50(pretrained=True)
+        backbone = resnet50(pretrained=pretrained)
         backbone_channels = 2048
 
     elif name == 'hrnet_w18':
-        backbone = hrnet_w18(pretrained=False)
+        backbone = hrnet_w18(pretrained=pretrained)
         backbone_channels = [18, 36, 72, 144]
+    
+    elif name == 'hrnet_w32':
+        backbone = hrnet_w32(pretrained=pretrained)
+        backbone_channels = [32, 64, 128, 256]
 
     elif name == 'hrnet_w48':
-        backbone = hrnet_w48(pretrained=True)
+        backbone = hrnet_w48(pretrained=pretrained)
         backbone_channels = [48, 96, 192, 384]
 
     else:
         raise NotImplementedError
 
+    if dilated: # Add dilated convolutions
+        assert(name in ['resnet18', 'resnet50'])
+        backbone = ResnetDilated(backbone)
+
+    if fuse_hrnet: # Fuse the multi-scale HRNet features
+        backbone = torch.nn.Sequential(backbone, HighResolutionFuse(backbone_channels, 256))
+        backbone_channels = sum(backbone_channels)
+
     return backbone, backbone_channels
 
 def get_head(name, backbone_channels, task):
     """ Return the decoder head """
-    if task == 'normal': n_output = 3
-    elif task == 'segment_semantic': n_output = len(COMBINED_CLASS_LABELS) - 1
-    else: raise NotImplementedError
-
     if name == 'deeplab':
-        return DeepLabHead(backbone_channels, n_output)
+        return DeepLabHead(backbone_channels, N_OUTPUTS[task])
 
     elif name == 'hrnet':
-        return HighResolutionHead(backbone_channels, n_output)
+        return HighResolutionHead(backbone_channels, N_OUTPUTS[task])
 
     else:
         raise NotImplementedError
@@ -54,11 +63,11 @@ def get_head(name, backbone_channels, task):
 
 class MultiTaskModel(nn.Module):
     """ Multi-task baseline model with shared encoder + task-specific decoders """
-    def __init__(self, tasks: list):
+    def __init__(self, tasks: list, backbone, head, pretrained, dilated):
         super(MultiTaskModel, self).__init__()
-        backbone, backbone_channels = get_backbone('hrnet_w48')
+        backbone, backbone_channels = get_backbone(backbone, pretrained, dilated, fuse_hrnet=False)
         heads = torch.nn.ModuleDict({
-            task: get_head(name='hrnet', backbone_channels=backbone_channels, task=task) for task in tasks
+            task: get_head(name=head, backbone_channels=backbone_channels, task=task) for task in tasks
             })
         self.backbone = backbone
         self.decoders = heads
@@ -69,4 +78,4 @@ class MultiTaskModel(nn.Module):
         shared_representation = self.backbone(x)
         return {task: F.interpolate(self.decoders[task](shared_representation), out_size, mode='bilinear') for task in self.tasks}
 
-
+  

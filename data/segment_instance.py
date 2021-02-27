@@ -37,11 +37,11 @@ REPLICA_CLASS_LABELS = [
 ]
 
 REPLICA_LABEL_TRANSFORM = [
-    0, 6, 62, 63, 64, 0, 66, 41, 5, 1, 67, 68, 69, 55, 21, 70, 27, 71, 62, 72, 38, 73, 56, 74, 75, 
-    76, 77, 48, 23, 78, 79, 80, 81, 82, 83, 84, 85, 86, 14, 87, 88, 8, 60, 89, 40, 25, 90, 91, 45,
-    92, 93, 50, 94, 46, 95, 96, 0, 97, 98, 99, 0, 100, 0, 40, 101, 102, 103, 54, 47, 104, 105, 103,
-    106, 107, 53, 108, 39, 109, 110, 111, 42, 74, 112, 97, 43, 61, 113, 44, 114, 7, 115, 57, 116, 117, 62, 
-    118, 119, 120, 121, 122, 8, 75
+    0, 6, 62, 63, 64, 0, 65, 41, 5, 1, 66, 67, 68, 55, 21, 69, 27, 70, 62, 71, 38, 72, 56, 73, 74, 
+    75, 76, 48, 23, 77, 78, 79, 80, 81, 82, 83, 84, 85, 14, 86, 87, 8, 60, 88, 40, 25, 89, 90, 45,
+    91, 92, 50, 93, 46, 94, 95, 0, 96, 97, 98, 0, 99, 0, 40, 100, 101, 102, 54, 47, 103, 104, 102,
+    105, 106, 53, 107, 39, 108, 109, 110, 42, 73, 111, 96, 43, 61, 112, 44, 113, 7, 114, 57, 115, 116, 62, 
+    117, 118, 119, 120, 121, 8, 74
 ]
 
 COMBINED_CLASS_LABELS = [
@@ -52,7 +52,7 @@ COMBINED_CLASS_LABELS = [
     'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
     'potted plant', 'bed', 'table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard',
     'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase',
-    'scissors', 'teddy bear', 'hair drier', 'toothbrush', 'cabinet', 'basket', 'bathtub', 'other-struct',
+    'scissors', 'teddy bear', 'hair drier', 'toothbrush', 'cabinet', 'basket', 'bathtub',
     'beanbag', 'bin', 'blanket', 'blinds', 'box', 'camera', 'candle', 'chopping-board','cloth', 'clothing',
     'coaster', 'comforter', 'cushion', 'curtain', 'ceiling', 'cooktop', 'countertop', 'desk', 'desk-organizer',
     'desktop-computer', 'door', 'faucet', 'floor', 'handrail', 'kitchen-utensil', 'lamp', 'major-appliance',
@@ -71,8 +71,8 @@ HYPERSIM_CLASS_LABELS = [
 ]
 
 HYPERSIM_LABEL_TRANSFORM = [
-    0, 117, 88, 62, 41, 38, 39, 42, 86, 120, 123, 99, 124, 69, 83, 103, 79, 125, 100, 126, 93, 75, 
-    80, 55, 54, 44, 97, 113, 127, 70, 128, 129, 95, 43, 53, 91, 64, 8, 0, 0, 0
+    0, 116, 87, 62, 41, 38, 39, 42, 85, 119, 122, 98, 123, 68, 82, 102, 78, 124, 99, 125, 92, 74, 
+    79, 55, 54, 44, 96, 112, 126, 69, 127, 128, 94, 43, 53, 90, 64, 8, 0, 0, 0
 ]
 
 

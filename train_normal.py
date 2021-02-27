@@ -93,7 +93,7 @@ class ConsistentNormal(pl.LightningModule):
         self.val_samples = self.select_val_samples_for_datasets()
 
         # self.model = UNet(in_channels=3, out_channels=3)
-        self.model = MultiTaskModel(tasks=['normal'])
+        self.model = MultiTaskModel(tasks=['normal'], backbone='hrnet_w48', head='hrnet', pretrained=True, dilated=False)
 
         if self.pretrained_weights_path is not None:
             checkpoint = torch.load(self.pretrained_weights_path)
@@ -163,7 +163,7 @@ class ConsistentNormal(pl.LightningModule):
     def setup_datasets(self):
         self.num_positive = 1 
 
-        tasks = ['rgb', 'normal', 'mask_valid']
+        tasks = ['rgb', 'normal', 'segment_semantic', 'mask_valid']
 
         self.train_datasets = []
         if self.use_taskonomy: self.train_datasets.append('taskonomy')
@@ -185,7 +185,7 @@ class ConsistentNormal(pl.LightningModule):
             transform='DEFAULT',
             image_size=self.image_size,
             num_positive=self.num_positive,
-            normalize_rgb=False,
+            normalize_rgb=True,
             randomize_views=True
         )
         self.trainset = TaskonomyReplicaGsoDataset(options=opt_train)
@@ -202,13 +202,13 @@ class ConsistentNormal(pl.LightningModule):
             transform='DEFAULT',
             image_size=self.image_size,
             num_positive=self.num_positive,
-            normalize_rgb=False,
+            normalize_rgb=True,
             randomize_views=False
         )
         self.valset = TaskonomyReplicaGsoDataset(options=opt_val)
 
         # Shuffle, so that truncated validation sets are randomly sampled, but the same throughout training
-        self.valset.randomize_order(seed=20)
+        self.valset.randomize_order(seed=99)
 
         print('Loaded training and validation sets:')
         print(f'Train set contains {len(self.trainset)} samples.')
@@ -292,7 +292,7 @@ class ConsistentNormal(pl.LightningModule):
         # Forward pass
         normal_preds = self(rgb)
         # clamp the output
-        normal_preds = torch.clamp(normal_preds, 0, 1)
+        # normal_preds = torch.clamp(normal_preds, 0, 1)
 
         # Mask out invalid pixels and compute loss
         mask_valid = self.make_valid_mask(batch['positive']['mask_valid']).repeat_interleave(3,1)
@@ -314,22 +314,26 @@ class ConsistentNormal(pl.LightningModule):
     def select_val_samples_for_datasets(self):
         frls = 0
         val_imgs = defaultdict(list)
-        while len(val_imgs['replica']) + len(val_imgs['gso']) + \
-            len(val_imgs['taskonomy']) + len(val_imgs['hypersim']) < 45:
-            idx = random.randint(0, len(self.valset))
+        while len(val_imgs['replica']) + len(val_imgs['taskonomy']) + \
+             len(val_imgs['hypersim']) + len(val_imgs['gso']) < 95:
+            idx = random.randint(0, len(self.valset) - 1)
             example = self.valset[idx]
             building = example['positive']['building']
             print(len(val_imgs['replica']), len(val_imgs['taskonomy']), len(val_imgs['hypersim']), len(val_imgs['gso']), building)
-            if building_in_hypersim(building) and len(val_imgs['hypersim']) < 15:
+            
+            if building_in_hypersim(building) and len(val_imgs['hypersim']) < 40:
                 val_imgs['hypersim'].append(idx)
-            elif building_in_gso(building) and len(val_imgs['gso']) < 10:
-                val_imgs['gso'].append(idx)
-            elif building_in_replica(building) and len(val_imgs['replica']) < 15:
-                if building.startswith('frl') and frls > 10:
+
+            elif building_in_replica(building) and len(val_imgs['replica']) < 25:
+                if building.startswith('frl') and frls > 15:
                     continue
                 if building.startswith('frl'): frls += 1
                 val_imgs['replica'].append(idx)
-            elif building_in_taskonomy(building) and len(val_imgs['taskonomy']) < 15:
+
+            elif building_in_gso(building) and len(val_imgs['gso']) < 20:
+                val_imgs['gso'].append(idx)
+
+            elif building_in_taskonomy(building) and len(val_imgs['taskonomy']) < 30:
                 val_imgs['taskonomy'].append(idx)
         return val_imgs
 
@@ -353,19 +357,20 @@ class ConsistentNormal(pl.LightningModule):
 
                 with torch.no_grad():
                     normal_preds_pos = self.model.forward(rgb_pos)['normal']
+                    normal_preds_pos = torch.clamp(normal_preds_pos, 0, 1)
 
                 for pos_idx in range(num_positive):
                     rgb = rgb_pos[pos_idx].permute(1, 2, 0).detach().cpu().numpy()
-                    rgb = wandb.Image(rgb, caption=f'RGB I{img_idx} V{pos_idx}')
+                    rgb = wandb.Image(rgb, caption=f'RGB I{img_idx}')
                     all_imgs[f'rgb-{dataset}'].append(rgb)
 
                     normal_gt = normal_gt_pos[pos_idx].permute(1, 2, 0).detach().cpu().numpy()
-                    normal_gt = wandb.Image(normal_gt, caption=f'GT I{img_idx} V{pos_idx}')
-                    all_imgs[f'gt-{dataset}'].append(normal_gt)
+                    normal_gt = wandb.Image(normal_gt, caption=f'GT-Normal I{img_idx}')
+                    all_imgs[f'gt-normal-{dataset}'].append(normal_gt)
 
                     normal_pred = normal_preds_pos[pos_idx].permute(1, 2, 0).detach().cpu().numpy()
-                    normal_pred = wandb.Image(normal_pred, caption=f'Pred I{img_idx} V{pos_idx}')
-                    all_imgs[f'pred-{dataset}'].append(normal_pred)
+                    normal_pred = wandb.Image(normal_pred, caption=f'Pred-Normal I{img_idx}')
+                    all_imgs[f'pred-normal-{dataset}'].append(normal_pred)
 
         self.logger.experiment.log(all_imgs, step=self.global_step)
 

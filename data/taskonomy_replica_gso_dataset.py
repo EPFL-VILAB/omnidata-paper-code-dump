@@ -23,7 +23,7 @@ from .splits import taskonomy_flat_split_to_buildings, replica_flat_split_to_bui
     gso_flat_split_to_buildings, hypersim_flat_split_to_buildings
 from .transforms import default_loader, get_transform, LocalContrastNormalization
 from .task_configs import task_parameters, SINGLE_IMAGE_TASKS
-from .segment_instance import HYPERSIM_LABEL_TRANSFORM, REPLICA_LABEL_TRANSFORM
+from .segment_instance import HYPERSIM_LABEL_TRANSFORM, REPLICA_LABEL_TRANSFORM, COMBINED_CLASS_LABELS
 
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True # TODO Test this
@@ -37,6 +37,8 @@ REPLICA_BUILDINGS = [
     'frl_apartment_5', 'office_2', 'room_2', 'office_4', 'frl_apartment_0', 'frl_apartment_4',
     'office_1', 'frl_apartment_3', 'office_0', 'apartment_2', 'room_0', 'apartment_1', 
     'frl_apartment_1', 'office_3', 'frl_apartment_2', 'apartment_0', 'hotel_0', 'room_1']
+
+N_OUTPUTS = {'segment_semantic': len(COMBINED_CLASS_LABELS)-1, 'depth_zbuffer':1, 'normal':3}
 
                     
 class TaskonomyReplicaGsoDataset(data.Dataset):

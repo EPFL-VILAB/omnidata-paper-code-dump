@@ -86,9 +86,9 @@ class SemanticSegmentation(pl.LightningModule):
         self.setup_datasets()
         self.val_samples = self.select_val_samples_for_datasets()
 
-        # self.model = get_configured_hrnet(n_classes=len(COMBINED_CLASS_LABELS)-1,\
-        #      load_imagenet_model=False, imagenet_ckpt_fpath='') #/scratch/ainaz/omnidata2/pretrained/hrnet_w48-8ef0771d.pth')
-        self.model = MultiTaskModel(tasks=['segment_semantic'])
+        self.model = get_configured_hrnet(n_classes=len(COMBINED_CLASS_LABELS)-1,\
+             load_imagenet_model=True, imagenet_ckpt_fpath='/scratch/ainaz/omnidata2/pretrained/hrnet_w48-8ef0771d.pth')
+        # self.model = MultiTaskModel(tasks=['segment_semantic'])
 
         # if self.pretrained_weights_path is not None:
         #     checkpoint = torch.load(self.pretrained_weights_path)
@@ -222,7 +222,7 @@ class SemanticSegmentation(pl.LightningModule):
         )
     
     def forward(self, x):
-        return self.model(x)['segment_semantic']
+        return self.model(x)
     
     def training_step(self, batch, batch_idx):
         res = self.shared_step(batch, train=True)
@@ -406,7 +406,7 @@ class SemanticSegmentation(pl.LightningModule):
                 if mask_valid.sum() == 0: continue
 
                 with torch.no_grad(): 
-                    preds = self.model.forward(rgb.unsqueeze(0))['segment_semantic'].squeeze(0)
+                    preds = self.model.forward(rgb.unsqueeze(0)).squeeze(0)
                     # preds_taskonomy, preds_replica, preds_hypersim, preds_gso = self.model.forward(rgb.unsqueeze(0))
 
 
@@ -442,10 +442,11 @@ class SemanticSegmentation(pl.LightningModule):
 
     
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-4)
+        # optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-4)
         # optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=1e-4)
         # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self.lr_step, gamma=0.5)
-        lmbda = lambda epoch: (1 - (epoch/20) ** 0.9) 
+        lmbda = lambda epoch: (1 - (epoch/50)) ** 0.9 
         scheduler = torch.optim.lr_scheduler.MultiplicativeLR(optimizer, lr_lambda=lmbda)
         return [optimizer], [scheduler]
     

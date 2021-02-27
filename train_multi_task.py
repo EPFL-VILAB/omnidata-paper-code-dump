@@ -85,7 +85,8 @@ class MuliTask(pl.LightningModule):
         self.setup_datasets()
         self.val_samples = self.select_val_samples_for_datasets()
 
-        self.model = MultiTaskModel(tasks=['normal', 'segment_semantic'])
+        self.model = MultiTaskModel(tasks=['normal', 'segment_semantic', 'depth_zbuffer'], backbone='hrnet_w48',\
+            head='hrnet', pretrained=True, dilated=False)
         
 
         # if self.pretrained_weights_path is not None:
@@ -165,7 +166,7 @@ class MuliTask(pl.LightningModule):
         if self.use_hypersim: self.train_datasets.append('hypersim')
 
         self.val_datasets = ['taskonomy', 'replica', 'hypersim'] #, 'gso']
-        tasks = ['rgb', 'normal', 'segment_semantic', 'mask_valid']
+        tasks = ['rgb', 'normal', 'segment_semantic', 'depth_zbuffer', 'mask_valid']
 
         opt_train = TaskonomyReplicaGsoDataset.Options(
             taskonomy_data_path=self.taskonomy_root,
@@ -227,24 +228,18 @@ class MuliTask(pl.LightningModule):
         res = self.shared_step(batch, train=True)
         # Logging
         self.log('train_loss_supervised', res['loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1)
-        self.log('train_normal_loss', res['normal_loss'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
-        self.log('train_semantic_loss', res['semantic_loss'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
-        for dataset in ['taskonomy', 'replica', 'hypersim', 'gso']:
-            if f'{dataset}_loss' in res.keys():
-                self.log(f'train_{dataset}_loss', res[f'{dataset}_loss'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
-            if f'{dataset}_loss_weight' in res.keys():
-                self.log(f'{dataset}_loss_weight', res[f'{dataset}_loss_weight'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
+        for task in ['semantic', 'normal', 'depth']:
+            self.log(f'train_{task}_loss', res[f'{task}_loss'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
+            self.log(f'{task}_loss_weight', res[f'{task}_loss_weight'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
+        
         return {'loss': res['loss']}
     
     def validation_step(self, batch, batch_idx):
         res = self.shared_step(batch, train=False)
         # Logging
         self.log('val_loss_supervised', res['loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1)
-        self.log('val_normal_loss', res['normal_loss'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
-        self.log('val_semantic_loss', res['semantic_loss'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
-        for dataset in ['taskonomy', 'replica', 'hypersim', 'gso']:
-            if f'{dataset}_loss' in res.keys():
-                self.log(f'val_{dataset}_loss', res[f'{dataset}_loss'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
+        for task in ['semantic', 'normal', 'depth']:
+            self.log(f'val_{task}_loss', res[f'{task}_loss'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
         return {'loss': res['loss']}
 
     def make_valid_mask(self, mask_float, max_pool_size=4, return_small_mask=False):
@@ -278,9 +273,11 @@ class MuliTask(pl.LightningModule):
         mask_valid = self.make_valid_mask(batch['positive']['mask_valid'])
         mask_valid_semantic = mask_valid.squeeze(1)
         mask_valid_normal = mask_valid.repeat_interleave(3,1)
+        mask_valid_depth = mask_valid.clone()
         rgb = batch['positive']['rgb']
         semantic = batch['positive']['segment_semantic']
         normal_gt = batch['positive']['normal']
+        depth_gt = batch['positive']['depth_zbuffer']
         semantic_gt = semantic[:,:,:,0]
 
         # background and undefined classes are labeled as 0
@@ -294,36 +291,31 @@ class MuliTask(pl.LightningModule):
         # Forward pass 
         preds = self(rgb)
         normal_preds = preds['normal']
-        normal_preds = torch.clamp(normal_preds, 0, 1)
+        # normal_preds = torch.clamp(normal_preds, 0, 1)
         semantic_preds = preds['segment_semantic']
+        depth_preds = preds['depth_zbuffer']
 
         criterion = nn.CrossEntropyLoss(ignore_index=-1)
         loss_normal = masked_l1_loss(normal_preds, normal_gt, mask_valid_normal)
         loss_semantic = criterion(semantic_preds, semantic_gt)
-        total_loss = 10 * loss_normal + loss_semantic
+        loss_depth = masked_l1_loss(depth_preds, depth_gt, mask_valid_depth)
 
-                
+        losses = {'semantic':loss_semantic, 'normal':loss_normal, 'depth':loss_depth}
+          
         # Compute loss weights
-        # zero_losses = [loss_name for loss_name in losses.keys() if losses[loss_name] == 0]
-        # for loss_name in zero_losses: del losses[loss_name]
+        if self.loss_balancing == 'grad_norm' and train and len(losses) > 1:
+            loss_weights = compute_grad_norm_losses(losses, self.model.backbone.layer4)
+        else:
+            loss_weights = {'semantic': 1, 'normal':10, 'depth':10}
 
-        # if self.loss_balancing == 'grad_norm' and train and len(losses) > 1:
-        #     loss_weights = compute_grad_norm_losses(losses, self.model)
-        # else:
-        #     loss_weights = {loss_name: 1 for loss_name in losses.keys()}
+        total_loss = sum([losses[loss_name] * loss_weights[loss_name] for loss_name in losses.keys()])
 
-        # total_loss = sum([losses[loss_name] * loss_weights[loss_name] for loss_name in losses.keys()])
-        # total_loss = total_loss / len(batch['positive']['rgb']) 
-
-        # for loss_name, loss in losses.items(): 
-        #     if counts[loss_name] > 0: 
-        #         step_results.update({f'{loss_name}_loss': loss/counts[loss_name]})
-        #         if train:
-        #             step_results.update({f'{loss_name}_loss_weight': loss_weights[loss_name]})              
+        for loss_name, loss in losses.items(): 
+            step_results.update({f'{loss_name}_loss': loss})   
+            if train:
+                step_results.update({f'{loss_name}_loss_weight': loss_weights[loss_name]})              
         
         step_results.update({
-            'normal_loss': loss_normal,
-            'semantic_loss': loss_semantic,
             'loss': total_loss
         })
         return step_results
@@ -376,10 +368,13 @@ class MuliTask(pl.LightningModule):
                 rgb = example['positive']['rgb'].to(self.device)
                 semantic = example['positive']['segment_semantic']
                 normal_gt = example['positive']['normal']
+                depth_gt = example['positive']['depth_zbuffer']
                 mask_valid = self.make_valid_mask(example['positive']['mask_valid'])
                 mask_valid_semantic = mask_valid.squeeze()
                 mask_valid_normal = mask_valid.squeeze(0).repeat_interleave(3,0)
+                mask_valid_depth = mask_valid.squeeze(0)
                 normal_gt[~mask_valid_normal] = 0
+                depth_gt[~mask_valid_depth] = 0
 
                 if dataset == 'gso': semantic_gt = 2**8 * semantic[:,:,0] + semantic[:,:,1]
                 else: semantic_gt = semantic[:,:,0]
@@ -396,6 +391,8 @@ class MuliTask(pl.LightningModule):
                     preds = self.model.forward(rgb.unsqueeze(0))
                     semantic_pred = preds['segment_semantic'].squeeze(0)
                     normal_pred = preds['normal'].squeeze(0)
+                    normal_pred = torch.clamp(normal_pred, 0, 1)
+                    depth_pred = preds['depth_zbuffer'].squeeze(0)
                     CLASS_COLORS = COMBINED_CLASS_COLORS
 
                 # semantic
@@ -434,6 +431,16 @@ class MuliTask(pl.LightningModule):
                 normal_pred = normal_pred.permute(1, 2, 0).detach().cpu().numpy()
                 normal_pred = wandb.Image(normal_pred, caption=f'Pred-Normal I{img_idx}')
                 all_imgs[f'pred-normal-{dataset}'].append(normal_pred)
+
+                # depth
+                depth_gt = depth_gt.permute(1, 2, 0).detach().cpu().numpy()
+                depth_gt = wandb.Image(depth_gt, caption=f'GT-Depth I{img_idx}')
+                all_imgs[f'gt-depth-{dataset}'].append(depth_gt)
+                depth_pred = depth_pred.permute(1, 2, 0).detach().cpu().numpy()
+                depth_pred = wandb.Image(depth_pred, caption=f'Pred-Depth I{img_idx}')
+                all_imgs[f'pred-depth-{dataset}'].append(depth_pred)
+
+
 
 
         self.logger.experiment.log(all_imgs, step=self.global_step)
@@ -485,12 +492,12 @@ if __name__ == '__main__':
     # Save weights like ./checkpoints/taskonomy_semseg/W&BID/epoch-X.ckpt
     checkpoint_callback = ModelCheckpoint(
         filepath=os.path.join(checkpoint_dir, '{epoch}'),
-        verbose=True, monitor='val_loss_supervised', mode='min', period=1, save_last=True, save_top_k=-1
+        verbose=True, monitor='val_loss_supervised', mode='min', period=1, save_last=True, save_top_k=10
     )
     
     if args.restore is None:
         trainer = pl.Trainer.from_argparse_args(args, logger=wandb_logger, \
-            checkpoint_callback=checkpoint_callback, gpus=-1, auto_lr_find=False, accelerator='ddp')
+            checkpoint_callback=checkpoint_callback, gpus=[0, 1], auto_lr_find=False, accelerator='ddp')
     else:
         trainer = pl.Trainer(
             resume_from_checkpoint=os.path.join(f'./checkpoints/{wandb_logger.name}/{args.restore}/last.ckpt'), 
