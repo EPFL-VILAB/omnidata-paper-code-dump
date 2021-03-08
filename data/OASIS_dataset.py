@@ -21,7 +21,7 @@ def make_dataset(dir):
     return images
 
 
-to_tensor = transforms.ToTensor()
+to_tensor = transforms.ToTensor() 
 RGB_MEAN = torch.Tensor([0.55312, 0.52514, 0.49313]).reshape(3,1,1)
 RGB_STD =  torch.Tensor([0.20555, 0.21775, 0.24044]).reshape(3,1,1)
 

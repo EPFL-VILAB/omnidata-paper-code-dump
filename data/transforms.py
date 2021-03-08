@@ -72,7 +72,8 @@ def get_transform(task: str, image_size=Optional[int]):
                 resize_frag
             ])
         else:
-            resize_method = Image.BILINEAR if task not in ['segment_panoptic', 'segment_instance', 'segment_semantic', 'mask_valid'] else Image.NEAREST
+            # resize_method = Image.BILINEAR if task not in ['segment_panoptic', 'segment_instance', 'segment_semantic', 'mask_valid'] else Image.NEAREST
+            resize_method = Image.BILINEAR if task in ['rgb'] else Image.NEAREST
             transform = transforms.Compose([
                 transforms.Resize(image_size, resize_method),
                 transform])

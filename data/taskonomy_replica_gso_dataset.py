@@ -7,6 +7,7 @@ import os
 import pickle
 import json
 from   PIL import Image, ImageFile
+import pandas as pd
 import random
 import re
 from   time import perf_counter 
@@ -38,7 +39,7 @@ REPLICA_BUILDINGS = [
     'office_1', 'frl_apartment_3', 'office_0', 'apartment_2', 'room_0', 'apartment_1', 
     'frl_apartment_1', 'office_3', 'frl_apartment_2', 'apartment_0', 'hotel_0', 'room_1']
 
-N_OUTPUTS = {'segment_semantic': len(COMBINED_CLASS_LABELS)-1, 'depth_zbuffer':1, 'normal':3}
+N_OUTPUTS = {'segment_semantic': len(COMBINED_CLASS_LABELS)-1, 'depth_zbuffer':1, 'normal':3, 'edge_occlusion':1}
 
                     
 class TaskonomyReplicaGsoDataset(data.Dataset):
@@ -73,10 +74,10 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
             
             Note: This assumes that all images are present in all (used) subfolders
         '''
-        taskonomy_data_path: str = '/scratch-data/group/taskonomy'
-        replica_data_path: str = '/scratch-data/group/taskonomy'
-        gso_data_path: str = '/scratch-data/group/taskonomy'
-        hypersim_data_path: str = '/scratch-data/group/taskonomy'
+        taskonomy_data_path: str = '/datasets/taskonomy'
+        replica_data_path: str = '/scratch/ainaz/replica-taskonomized'
+        gso_data_path: str = '/scratch/ainaz/replica-google-objects'
+        hypersim_data_path: str = '/scratch/ainaz/hypersim-dataset2/evermotion/scenes'
         split: str = 'train'
         taskonomy_variant: str = 'tiny'
         tasks: List[str] = field(default_factory=lambda: ['rgb'])
@@ -95,16 +96,17 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
         self.size = 0
 
         for dataset in self.datasets:
+            all_tasks = ['rgb', 'normal', 'segment_semantic', 'keypoints2d', 'keypoints3d', 'depth_zbuffer', 'edge_texture', 'edge_occlusion', 'mask_valid']
             if dataset == 'taskonomy':
                 tmp_path = './tmp/{}_{}_{}.pkl'.format(
                     dataset,
-                    '-'.join(options.tasks), 
+                    '-'.join(all_tasks), 
                     f'{options.taskonomy_variant}-{options.split}'
                 )
             else:
                 tmp_path = './tmp/{}_{}_{}.pkl'.format(
                     dataset,
-                    '-'.join(options.tasks), 
+                    '-'.join(all_tasks), 
                     options.split
                 )
 
@@ -114,9 +116,9 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                 with open(tmp_path, 'rb') as f:
                     dataset_urls = pickle.load(f)
                     for task, urls in dataset_urls.items():
+                        if task not in options.tasks: continue
                         # TODO remove later
                         task2 = 'segment_semantic' if task == 'segment_panoptic' else task
-
                         self.urls[task2] += urls
                 dataset_size = len(dataset_urls[self.tasks[0]])
                 self.size += dataset_size
@@ -138,8 +140,11 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                                              self.gso_data_path, task, self.gso_buildings) 
                                         for task in options.tasks}
                 elif dataset == 'hypersim':
-                    dataset_urls = {task: make_hypersim_dataset(
-                                             self.hypersim_data_path, task, self.hypersim_buildings) 
+                    # dataset_urls = {task: make_hypersim_dataset(
+                    #                          self.hypersim_data_path, task, self.hypersim_buildings) 
+                    #                     for task in options.tasks}
+                    dataset_urls = {task: make_hypersim_dataset_orig_split(
+                                             self.hypersim_data_path, task, self.split) 
                                         for task in options.tasks}
 
                 dataset_urls, dataset_size  = self._remove_unmatched_images(dataset_urls)
@@ -195,7 +200,7 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
             self.transform['rgb'] = transforms.Compose(
                 self.transform['rgb'].transforms +
                 [transforms.Normalize(mean=RGB_MEAN, std=RGB_STD)]
-                # [LocalContrastNormalization()] # segnet
+
             )
 
     
@@ -218,6 +223,10 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                     building = url.split('/')[-2]
                 else:
                     raise NotImplementedError('Dataset path (url) not recognized!')
+
+                if building == 'wiconisco': continue # something wrong with edge texture
+                # if url.__contains__('wiconisco/point_452_view_8'): continue
+                
 
                 file_name = url.split('/')[-1].split('_')
   
@@ -319,7 +328,8 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
 
                 # additional transform for hypersim dataset because img size is (768, 1024)
                 if path.__contains__('hypersim'):
-                    resize_method = Image.BILINEAR if task not in ['segment_instance', 'segment_semantic', 'mask_valid'] else Image.NEAREST
+                    resize_method = Image.BILINEAR if task in ['rgb'] else Image.NEAREST
+                    # resize_method = Image.BILINEAR if task not in ['segment_instance', 'segment_semantic', 'mask_valid'] else Image.NEAREST
                     transform = transforms.Compose([
                         transforms.Resize(self.image_size, resize_method), 
                         transforms.CenterCrop(self.image_size)])
@@ -395,7 +405,16 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                 max(n_images_task)[0], min(n_images_task)[0], "\n\t".join([str(t) for t in n_images_task])))
             # Get views for each task
             def _parse_fpath_for_view( path ):
-                building = os.path.basename(os.path.dirname(path))
+                url = path
+                if url.__contains__('replica-taskonomized'):
+                    building = url.split('/')[-3]
+                elif url.__contains__('replica-google-objects'): # e.g apartment_0-3, apartment_0-6
+                    building = url.split('/')[-4] + '-' + url.split('/')[-3]
+                elif url.__contains__('hypersim'): # e.g ai_001_001-cam_00, ai_001_001-cam_01
+                    building = url.split('/')[-5] + '-' + url.split('/')[-3]
+                elif url.__contains__('taskonomy'):
+                    building = url.split('/')[-2]
+                # building = os.path.basename(os.path.dirname(path))
                 file_name = os.path.basename(path) 
                 lf = parse_filename( file_name )
                 return View(view=lf.view, point=lf.point, building=building)
@@ -472,7 +491,7 @@ def make_hypersim_dataset(dir, task, folders=None):
     dir = os.path.expanduser(dir)
     if not os.path.isdir(dir):
         assert "bad directory"
-    
+
     for folder in folders:
         taskonomized_path = os.path.join(dir, folder, 'taskonomized')
         for camera in os.listdir(taskonomized_path):
@@ -487,6 +506,42 @@ def make_hypersim_dataset(dir, task, folders=None):
                 if point not in bad_points:
                     path = os.path.join(folder_path, fname)
                     images.append(path)
+
+    return images
+
+def make_hypersim_dataset_orig_split(dir, task, split):
+    hypersim_orig_split_file = os.path.join(os.path.dirname(__file__), 'splits', f'{split}_hypersim_orig.csv')
+    df = pd.read_csv(hypersim_orig_split_file)
+
+    if task == 'segment_semantic': task = 'semantic_hdf5'
+    #  folders are building names. 
+    images = []
+    dir = os.path.expanduser(dir)
+    if not os.path.isdir(dir):
+        assert "bad directory"
+
+    folders = [scene for scene in set(df['scene_name'].tolist()) if scene in os.listdir(dir)]
+    for folder in folders:
+        scene = df.loc[df['scene_name']==folder]
+        taskonomized_path = os.path.join(dir, folder, 'taskonomized')
+        for camera in os.listdir(taskonomized_path):
+            if not camera.startswith('cam'):
+                continue
+            scene_cam = scene.loc[scene['camera_name']==camera]
+            # filter out bad points from filtered_points.json
+            with open(os.path.join(taskonomized_path, camera, 'filtered_points.json')) as json_file:
+                bad_points = json.load(json_file)
+            folder_path = os.path.join(taskonomized_path, camera, task)
+            for fname in sorted(os.listdir(folder_path)):
+                point = fname.split('_')[1]
+                if point in bad_points: continue
+
+                row = scene_cam.loc[scene_cam['frame_id']==int(point)]
+                if not row.empty and row.iloc[0]['included_in_public_release'] and row.iloc[0]['split_partition_name'] == split:
+                    path = os.path.join(folder_path, fname)
+                    images.append(path)
+
+        print(len(images))
 
     return images
 

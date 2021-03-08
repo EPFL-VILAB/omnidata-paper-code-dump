@@ -12,7 +12,8 @@ from collections import defaultdict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data.sampler import WeightedRandomSampler
 import torchvision
 from torchvision import transforms
 from torchvision.models.segmentation import deeplabv3_resnet101
@@ -98,8 +99,8 @@ class SemanticSegmentation(pl.LightningModule):
         # self.model = get_configured_hrnet(n_classes=len(COMBINED_CLASS_LABELS)-1,\
         #      load_imagenet_model=True, imagenet_ckpt_fpath='/scratch/ainaz/omnidata2/pretrained/hrnet_w48-8ef0771d.pth')
         # self.model = UNet(in_channels=3, out_channels=len(COMBINED_CLASS_LABELS)-1)
-        self.model = MultiTaskModel(tasks=['segment_semantic'], backbone='hrnet_w18',\
-            head='hrnet', pretrained=True, dilated=False)
+        self.model = MultiTaskModel(tasks=['segment_semantic'], n_channels=10, \
+            backbone='hrnet_w18', head='hrnet', pretrained=False, dilated=False)
 
         if self.pretrained_weights_path is not None:
             checkpoint = torch.load(self.pretrained_weights_path)
@@ -158,13 +159,13 @@ class SemanticSegmentation(pl.LightningModule):
             '--use_taskonomy', action='store_true', default=False,
             help='Set to use taskonomy dataset.')
         parser.add_argument(
-            '--use_replica', action='store_true', default=False,
+            '--use_replica', action='store_true', default=True,
             help='Set to use replica dataset.')
         parser.add_argument(
             '--use_gso', action='store_true', default=False,
             help='Set to user GSO dataset.')
         parser.add_argument(
-            '--use_hypersim', action='store_true', default=True,
+            '--use_hypersim', action='store_true', default=False,
             help='Set to user hypersim dataset.')
         parser.add_argument(
             '--model_name', type=str, default='mask_rnn',
@@ -180,11 +181,17 @@ class SemanticSegmentation(pl.LightningModule):
         if self.use_hypersim: self.train_datasets.append('hypersim')
 
         self.val_datasets = ['taskonomy', 'replica', 'hypersim']
-        tasks = ['rgb', 'normal', 'segment_semantic', 'depth_zbuffer', 'mask_valid']
-
-        opt_train = TaskonomyReplicaGsoDataset.Options(
+        # tasks = ['rgb', 'segment_semantic', 'mask_valid']
+        # tasks = ['rgb', 'normal', 'segment_semantic', 'edge_occlusion', 'mask_valid']
+        # tasks = ['rgb', 'normal', 'segment_semantic', 'edge_texture', 'depth_zbuffer', 'mask_valid']
+        # tasks = ['rgb', 'normal', 'segment_semantic', 'edge_occlusion', 'depth_zbuffer', 'mask_valid']
+        # tasks = ['rgb', 'normal', 'segment_semantic', 'edge_occlusion', 'edge_texture', 'depth_zbuffer', 'mask_valid']
+        tasks = ['rgb', 'normal', 'segment_semantic', 'edge_occlusion', 'edge_texture', 'keypoints3d', \
+            'depth_zbuffer', 'mask_valid']
+        
+        opt_train_taskonomy = TaskonomyReplicaGsoDataset.Options(
             tasks=tasks,
-            datasets=self.train_datasets,
+            datasets=['taskonomy'],
             split='train',
             taskonomy_variant=self.taskonomy_variant,
             transform='DEFAULT',
@@ -193,21 +200,33 @@ class SemanticSegmentation(pl.LightningModule):
             randomize_views=True
         )
         
-        self.trainset = TaskonomyReplicaGsoDataset(options=opt_train)
+        self.trainset_taskonomy = TaskonomyReplicaGsoDataset(options=opt_train_taskonomy)
 
-        # opt_val_combined = TaskonomyReplicaGsoDataset.Options(
-        #     split='val',
-        #     taskonomy_variant=self.taskonomy_variant,
-        #     tasks=tasks,
-        #     datasets=['taskonomy', 'replica', 'hypersim'],
-        #     transform='DEFAULT',
-        #     image_size=self.image_size,
-        #     normalize_rgb=True,
-        #     randomize_views=False
-        # )
+        opt_train_replica = TaskonomyReplicaGsoDataset.Options(
+            tasks=tasks,
+            datasets=['replica'],
+            split='train',
+            taskonomy_variant=self.taskonomy_variant,
+            transform='DEFAULT',
+            image_size=self.image_size,
+            normalize_rgb=True,
+            randomize_views=True
+        )
+        
+        self.trainset_replica = TaskonomyReplicaGsoDataset(options=opt_train_replica)
 
-        # self.valset_combined = TaskonomyReplicaGsoDataset(options=opt_val_combined)
-        # self.valset_combined.randomize_order(seed=99)
+        opt_train_hypersim = TaskonomyReplicaGsoDataset.Options(
+            tasks=tasks,
+            datasets=['hypersim'],
+            split='train',
+            taskonomy_variant=self.taskonomy_variant,
+            transform='DEFAULT',
+            image_size=self.image_size,
+            normalize_rgb=True,
+            randomize_views=True
+        )
+        
+        self.trainset_hypersim = TaskonomyReplicaGsoDataset(options=opt_train_hypersim)
 
         opt_val_taskonomy = TaskonomyReplicaGsoDataset.Options(
             split='val',
@@ -252,15 +271,33 @@ class SemanticSegmentation(pl.LightningModule):
         self.valset_hypersim.randomize_order(seed=99)
 
         print('Loaded training and validation sets:')
-        print(f'Train set contains {len(self.trainset)} samples.')
+        # print(f'Train set contains {len(self.trainset)} samples.')
         # print(f'Validation set (combined) contains {len(self.valset_combined)} samples.')
+        print(f'Train set (taskonomy) contains {len(self.trainset_taskonomy)} samples.')
+        print(f'Train set (replica) contains {len(self.trainset_replica)} samples.')
+        print(f'Train set (hypersim) contains {len(self.trainset_hypersim)} samples.')
         print(f'Validation set (taskonomy) contains {len(self.valset_taskonomy)} samples.')
         print(f'Validation set (replica) contains {len(self.valset_replica)} samples.')
         print(f'Validation set (hypersim) contains {len(self.valset_hypersim)} samples.')
     
-    def train_dataloader(self):
+    def train_dataloader_single(self):
         return DataLoader(
             self.trainset, batch_size=self.batch_size, shuffle=True, 
+            num_workers=self.num_workers, pin_memory=False
+        )
+
+    def train_dataloader(self):
+        taskonomy_count = len(self.trainset_taskonomy)
+        replica_count = len(self.trainset_replica)
+        hypersim_count = len(self.trainset_hypersim)
+        dataset_sample_count = torch.tensor([taskonomy_count, replica_count, hypersim_count])
+        weight = 1. / dataset_sample_count.float()
+        print("!!!!!!!!!!! ", weight, dataset_sample_count)
+        samples_weight = torch.tensor([weight[0]] * taskonomy_count + [weight[1]] * replica_count + [weight[2]] * hypersim_count)
+        sampler = WeightedRandomSampler(samples_weight, len(samples_weight))
+        trainset = ConcatDataset([self.trainset_taskonomy, self.trainset_replica, self.trainset_hypersim])
+        return DataLoader(
+            trainset, batch_size=self.batch_size, sampler=sampler, 
             num_workers=self.num_workers, pin_memory=False
         )
         
@@ -338,6 +375,11 @@ class SemanticSegmentation(pl.LightningModule):
         step_results = {}
         criterion = nn.CrossEntropyLoss(ignore_index=-1)
         rgb = batch['positive']['rgb']
+        normal = batch['positive']['normal']
+        depth = batch['positive']['depth_zbuffer']
+        edge_occlusion = batch['positive']['edge_occlusion']
+        edge_texture = batch['positive']['edge_texture']
+        keypoints3d = batch['positive']['keypoints3d']
         semantic = batch['positive']['segment_semantic']
         mask_valid = self.make_valid_mask(batch['positive']['mask_valid']).squeeze(1)
 
@@ -357,7 +399,13 @@ class SemanticSegmentation(pl.LightningModule):
         labels_gt -= 1  # the model should not predict undefined and background classes
 
         # Forward pass 
-        labels_preds = self(rgb)
+        # combo_input = torch.cat([rgb, normal, edge_occlusion], dim=1)
+        # combo_input = torch.cat([rgb, normal, depth, edge_texture], dim=1)
+        # combo_input = torch.cat([rgb, normal, depth, edge_occlusion], dim=1)
+        # combo_input = torch.cat([rgb, normal, depth, edge_texture, edge_occlusion], dim=1)
+        combo_input = torch.cat([rgb, normal, depth, edge_texture, edge_occlusion, keypoints3d], dim=1)
+
+        labels_preds = self(combo_input)
 
         total_loss = criterion(labels_preds, labels_gt)
         
@@ -389,54 +437,31 @@ class SemanticSegmentation(pl.LightningModule):
             self.log(f'val_{loss_name}', losses[loss_name], prog_bar=False, logger=True, sync_dist=self.gpus>1)
 
         # Log validation set and OOD debug images using W&B
-        if self.global_step >= self.log_val_imgs_step + 4000:
+        if self.global_step >= self.log_val_imgs_step + 15000 or self.global_step <= 2000:
             self.log_val_imgs_step = self.global_step
             self.log_validation_example_images(num_images=10)
-            self.log_ood_example_images(num_images=10)
+            # self.log_ood_example_images(num_images=10)
 
-    def select_train_samples_for_datasets(self):
-        frls = 0
-        train_imgs = defaultdict(list)
-        while len(train_imgs['hypersim']) < 30:
-
-            idx = random.randint(0, len(self.trainset) - 1)
-            example = self.trainset[idx]
-            building = example['positive']['building']
-            print(len(train_imgs['hypersim']), len(train_imgs['taskonomy']), len(train_imgs['hypersim']), len(train_imgs['gso']), building)
-            
-            if building_in_hypersim(building) and len(train_imgs['hypersim']) < 30:
-                train_imgs['hypersim'].append(idx)
-
-            elif building_in_replica(building) and len(train_imgs['replica']) < 25:
-                if building.startswith('frl') and frls > 15:
-                    continue
-                if building.startswith('frl'): frls += 1
-                train_imgs['replica'].append(idx)
-
-            elif building_in_gso(building) and len(train_imgs['gso']) < 20:
-                train_imgs['gso'].append(idx)
-
-            elif building_in_taskonomy(building) and len(train_imgs['taskonomy']) < 30:
-                train_imgs['taskonomy'].append(idx)
-        return train_imgs
 
     def select_val_samples_for_datasets(self):
         frls = 0
         val_imgs = defaultdict(list)
-        with open('/scratch/ainaz/omnidata2/val_samples/hypersim_val_indices.pkl', 'rb') as f:
-            val_imgs['hypersim'] = pickle.load(f)
+        # with open('/scratch/ainaz/omnidata2/val_samples/hypersim_val_indices.pkl', 'rb') as f:
+        #     val_imgs['hypersim'] = pickle.load(f)
 
-        # if self.val_datasets == ['hypersim']: return val_imgs
+        while len(val_imgs['hypersim']) < 40:
+            idx = random.randint(0, len(self.valset_hypersim) - 1)
+            val_imgs['hypersim'].append(idx)
 
-        while len(val_imgs['replica']) < 20:
+        while len(val_imgs['replica']) < 25:
             idx = random.randint(0, len(self.valset_replica) - 1)
             example = self.valset_replica[idx]
             building = example['positive']['building']
-            if building.startswith('frl') and frls > 10:
+            if building.startswith('frl') and frls > 12:
                 continue
             if building.startswith('frl'): frls += 1
             val_imgs['replica'].append(idx)
-        while len(val_imgs['taskonomy']) < 15:
+        while len(val_imgs['taskonomy']) < 20:
             idx = random.randint(0, len(self.valset_taskonomy) - 1)
             val_imgs['taskonomy'].append(idx)
 
@@ -456,6 +481,12 @@ class SemanticSegmentation(pl.LightningModule):
 
                 rgb = example['positive']['rgb'].to(self.device)
                 semantic = example['positive']['segment_semantic']
+                normal = example['positive']['normal'].to(self.device)
+                depth = example['positive']['depth_zbuffer'].to(self.device)
+                edge_texture = example['positive']['edge_texture'].to(self.device)
+                edge_occlusion = example['positive']['edge_occlusion'].to(self.device)
+                keypoints3d = example['positive']['keypoints3d'].to(self.device)
+
 
                 if dataset == 'gso': labels_gt = 2**8 * semantic[:,:,0] + semantic[:,:,1]
                 else: labels_gt = semantic[:,:,0]
@@ -470,11 +501,12 @@ class SemanticSegmentation(pl.LightningModule):
                 if mask_valid.sum() == 0: continue
 
                 with torch.no_grad(): 
-                    preds = self.model.forward(rgb.unsqueeze(0))['segment_semantic'].squeeze(0)
+                    combo_input = torch.cat([rgb, normal, depth, edge_texture, edge_occlusion, keypoints3d], dim=0)
+                    preds = self.model.forward(combo_input.unsqueeze(0))['segment_semantic'].squeeze(0)
 
                 # compute loss
-                gt = labels_gt -1
-                loss = criterion(preds.unsqueeze(0), gt.unsqueeze(0).to(preds.device))
+                # gt = labels_gt -1
+                # loss = criterion(preds.unsqueeze(0), gt.unsqueeze(0).to(preds.device))
 
                 mask_preds = F.softmax(preds, dim=0)
                 mask_preds = torch.argmax(mask_preds, dim=0) + 1 # model does not predict background/undefined
@@ -482,22 +514,18 @@ class SemanticSegmentation(pl.LightningModule):
                 rgb_masked = (rgb.detach().clone().cpu() * RGB_STD + RGB_MEAN).permute(1,2,0).numpy()
                 # rgb_masked = (rgb.detach().clone().cpu()).permute(1,2,0).numpy()
 
-                # # error image
                 mask = mask_valid.unsqueeze(axis=2).repeat_interleave(3,2) * 1.0
-                # err_im = torch.clamp(loss, 0, 1).repeat_interleave(3, 0)
-                # err_im = loss.detach().clone().cpu().permute(1,2,0).numpy()
-                # err_im = mask * np.uint8(err_im * 255) + (1-mask) * np.uint8(rgb_masked * 255.0)
 
                 # heatmap
-                fig=plt.figure()
-                ax = plt.gca()
-                im = ax.imshow(loss.detach().clone().cpu().squeeze().numpy())
-                divider = make_axes_locatable(ax)
-                cax = divider.append_axes("right", size="5%", pad=0.05)
-                plt.colorbar(im, cax=cax)
-                fig.canvas.draw()
-                w, h = fig.get_size_inches() * fig.get_dpi()
-                heatmap = np.fromstring(fig.canvas.tostring_rgb(), dtype='uint8').reshape(int(h),int(w), 3)
+                # fig=plt.figure()
+                # ax = plt.gca()
+                # im = ax.imshow(loss.detach().clone().cpu().squeeze().numpy())
+                # divider = make_axes_locatable(ax)
+                # cax = divider.append_axes("right", size="5%", pad=0.05)
+                # plt.colorbar(im, cax=cax)
+                # fig.canvas.draw()
+                # w, h = fig.get_size_inches() * fig.get_dpi()
+                # heatmap = np.fromstring(fig.canvas.tostring_rgb(), dtype='uint8').reshape(int(h),int(w), 3)
 
                 metadata = MetadataCatalog.get(dataset)
                 metadata.stuff_classes = COMBINED_CLASS_LABELS
@@ -521,95 +549,11 @@ class SemanticSegmentation(pl.LightningModule):
                 anno_pred = wandb.Image(np.uint8(pred_im), caption=f'Pred-Semantic {img_idx}')
                 all_imgs[f'pred-semantic-{dataset}'].append(anno_pred)
 
-                # anno_error = wandb.Image(np.uint8(err_im), caption=f'Error-Val-Semantic {img_idx}')
-                # all_imgs[f'error-val-semantic-{dataset}'].append(anno_error)
-                anno_heatmap = wandb.Image(np.uint8(heatmap), caption=f'Heatmap-Val-Semantic {img_idx}')
-                all_imgs[f'heatmap-val-semantic-{dataset}'].append(anno_heatmap)
+                # anno_heatmap = wandb.Image(np.uint8(heatmap), caption=f'Heatmap-Val-Semantic {img_idx}')
+                # all_imgs[f'heatmap-val-semantic-{dataset}'].append(anno_heatmap)
 
         self.logger.experiment.log(all_imgs, step=self.global_step)
 
-    def log_train_example_images(self, num_images=10):
-        self.model.eval()
-        all_imgs = defaultdict(list)
-        criterion = nn.CrossEntropyLoss(ignore_index=-1, reduce=False)
-
-        for dataset in self.val_datasets:
-            for img_idx in self.train_samples[dataset]:
-                example = self.trainset[img_idx]
-
-                rgb = example['positive']['rgb'].to(self.device)
-                semantic = example['positive']['segment_semantic']
-
-                if dataset == 'gso': labels_gt = 2**8 * semantic[:,:,0] + semantic[:,:,1]
-                else: labels_gt = semantic[:,:,0]
-                
-                # background and undefined classes are labeled as 0
-                labels_gt[(semantic[:,:,0]==255) * (semantic[:,:,1]==255) * (semantic[:,:,2]==255)] = 0
-                labels_gt[labels_gt==-1] = 0
-
-                mask_valid = self.make_valid_mask(example['positive']['mask_valid']).squeeze()
-                labels_gt *= mask_valid.cpu()  # final labels
-                mask_valid = labels_gt != 0
-                if mask_valid.sum() == 0: continue
-
-                with torch.no_grad(): 
-                    preds = self.model.forward(rgb.unsqueeze(0))['segment_semantic'].squeeze(0)
-
-                # compute loss
-                gt = labels_gt -1
-                loss = criterion(preds.unsqueeze(0), gt.unsqueeze(0).to(preds.device))
-
-                mask_preds = F.softmax(preds, dim=0)
-                mask_preds = torch.argmax(mask_preds, dim=0) + 1 # model does not predict background/undefined
-                mask_preds *= mask_valid.to(self.device)
-                rgb_masked = (rgb.detach().clone().cpu() * RGB_STD + RGB_MEAN).permute(1,2,0).numpy()
-                # rgb_masked = (rgb.detach().clone().cpu()).permute(1,2,0).numpy()
-
-                # error image
-                mask = mask_valid.unsqueeze(axis=2).repeat_interleave(3,2) * 1.0
-                err_im = torch.clamp(loss, 0, 1).repeat_interleave(3, 0)
-                err_im = loss.detach().clone().cpu().permute(1,2,0).numpy()
-                err_im = mask * np.uint8(err_im * 255) + (1-mask) * np.uint8(rgb_masked * 255.0)
-
-                # heatmap
-                fig=plt.figure()
-                ax = plt.gca()
-                im = ax.imshow(loss.detach().clone().cpu().squeeze().numpy())
-                divider = make_axes_locatable(ax)
-                cax = divider.append_axes("right", size="5%", pad=0.05)
-                plt.colorbar(im, cax=cax)
-                fig.canvas.draw()
-                w, h = fig.get_size_inches() * fig.get_dpi()
-                heatmap = np.fromstring(fig.canvas.tostring_rgb(), dtype='uint8').reshape(int(h),int(w), 3)
-
-                metadata = MetadataCatalog.get(dataset)
-                metadata.stuff_classes = COMBINED_CLASS_LABELS
-                metadata.things_classes = []
-                metadata.stuff_colors = [[c * 255.0 for c in color] for color in COMBINED_CLASS_COLORS] 
-
-                visualizer_gt = Visualizer(rgb_masked * 255.0, metadata=metadata)
-                vis_gt = visualizer_gt.draw_sem_seg(labels_gt.cpu(), area_threshold=None, alpha=0.9)
-                gt_im = vis_gt.get_image()
-                gt_im = mask * np.uint8(gt_im) + (1-mask) * np.uint8(rgb_masked * 255.0)
-
-                visualizer_pred = Visualizer(rgb_masked * 255.0, metadata=metadata)
-                vis_pred = visualizer_pred.draw_sem_seg(mask_preds.cpu(), area_threshold=None, alpha=0.6)
-                pred_im = vis_pred.get_image()
-                pred_im = mask * np.uint8(pred_im) + (1-mask) * np.uint8(rgb_masked * 255.0) 
-
-                rgb_img = wandb.Image(rgb.permute(1,2,0).detach().cpu().numpy(), caption=f'RGB-Train {img_idx}')
-                all_imgs[f'rgb-train-{dataset}'].append(rgb_img)
-                anno_gt = wandb.Image(np.uint8(gt_im), caption=f'GT-Train-Semantic {img_idx}')
-                all_imgs[f'gt-train-semantic-{dataset}'].append(anno_gt)
-                anno_pred = wandb.Image(np.uint8(pred_im), caption=f'Pred-Train-Semantic {img_idx}')
-                all_imgs[f'pred-train-semantic-{dataset}'].append(anno_pred)
-                anno_error = wandb.Image(np.uint8(err_im), caption=f'Error-Train-Semantic {img_idx}')
-                all_imgs[f'error-train-semantic-{dataset}'].append(anno_error)
-
-                anno_heatmap = wandb.Image(np.uint8(heatmap), caption=f'Heatmap-train-Semantic {img_idx}')
-                all_imgs[f'heatmap-train-semantic-{dataset}'].append(anno_heatmap)
-
-        self.logger.experiment.log(all_imgs, step=self.global_step)
 
     def log_ood_example_images(self, data_dir='/datasets/evaluation_ood/real_world/images', num_images=15):
         self.model.eval()
@@ -697,7 +641,7 @@ if __name__ == '__main__':
     
     if args.restore is None:
         trainer = pl.Trainer.from_argparse_args(args, logger=wandb_logger, \
-            checkpoint_callback=checkpoint_callback, gpus=[0,1], auto_lr_find=False, accelerator='ddp')
+            checkpoint_callback=checkpoint_callback, gpus=[0,1], auto_lr_find=False, accelerator='ddp', replace_sampler_ddp=False, gradient_clip_val=10)
     else:
         trainer = pl.Trainer(
             resume_from_checkpoint=os.path.join(f'./checkpoints/{wandb_logger.name}/{args.restore}/last.ckpt'), 

@@ -86,8 +86,9 @@ class NormalTest(pl.LightningModule):
 
         self.setup_datasets()
 
-        self.model = UNet(in_channels=3, out_channels=3)
-        # self.model = MultiTaskModel(tasks=['normal', 'segment_semantic'], backbone='hrnet_w48', pretrained=False)
+        # self.model = UNet(in_channels=3, out_channels=3)
+        self.model = MultiTaskModel(tasks=['normal', 'segment_semantic', 'depth_zbuffer'], backbone='hrnet_w48', 
+        head='hrnet', pretrained=False, dilated=False)
 
         if self.pretrained_weights_path is not None:
             checkpoint = torch.load(self.pretrained_weights_path, map_location='cuda:0')
@@ -180,7 +181,7 @@ class NormalTest(pl.LightningModule):
             self.testset = self.nyu_dataloader.imgs
 
         elif self.use_oasis:
-            self.oasis_dataloader = OASISDataset(root=self.oasis_root, output_size=self.image_size, normalized=False)
+            self.oasis_dataloader = OASISDataset(root=self.oasis_root, output_size=self.image_size, normalized=True)
             self.testset = self.oasis_dataloader.imgs
 
         else:
@@ -225,7 +226,7 @@ class NormalTest(pl.LightningModule):
             )
 
     def forward(self, x):
-        return self.model(x)
+        return self.model(x)['normal']
 
 
     def test_step(self, batch, batch_idx):   
@@ -259,13 +260,13 @@ class NormalTest(pl.LightningModule):
             # rgb = np.uint8(255 * rgb[0].cpu().permute((1, 2, 0)).numpy())
             # mask = np.uint8(255 * mask_valid[0].cpu().permute((1, 2, 0)).numpy())
 
-            transform = transforms.Resize(512, Image.BILINEAR)
+            transform = transforms.Resize(512, Image.NEAREST)
             # im = Image.fromarray(rgb)
             # transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_rgb.png'))
             # im = Image.fromarray(gt)
             # im.save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_gt.png'))
             im = Image.fromarray(pred)
-            transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_{self.model_name}_pred.png'))
+            im.save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_multitask', f'{batch_idx}_{self.model_name}_pred.png'))
             # im = Image.fromarray(mask)
             # im.save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_mask.png'))
 

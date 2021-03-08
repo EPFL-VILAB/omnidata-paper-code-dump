@@ -261,12 +261,12 @@ blocks_dict = {
 
 class HighResolutionNet(nn.Module):
 
-    def __init__(self, config, **kwargs):
+    def __init__(self, n_channels, config, **kwargs):
         extra = config['MODEL']['EXTRA']
         super(HighResolutionNet, self).__init__()
 
         # stem net
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1,
+        self.conv1 = nn.Conv2d(n_channels, 64, kernel_size=3, stride=2, padding=1,
                                bias=False)
         self.bn1 = BatchNorm2d(64, momentum=BN_MOMENTUM)
         self.conv2 = nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1,
@@ -508,16 +508,16 @@ class HighResolutionHead(nn.Module):
         x = self.last_layer(x)
         return x        
 
-def hrnet_w18(pretrained=False):
+def hrnet_w18(n_channels, pretrained=False):
     import yaml
     hrnet_cfg = os.path.join(os.path.dirname(__file__), 'hrnet_w18.yml')
      
     with open(hrnet_cfg, 'r') as stream:
         hrnet_cfg = yaml.safe_load(stream)
     
-    model = HighResolutionNet(hrnet_cfg)
+    model = HighResolutionNet(n_channels=n_channels, config=hrnet_cfg)
     if pretrained:
-        pretrained_weights = os.path.join('/scratch/ainaz/omnidata2/pretrained', 'hrnet_w18_small_model_v1.pth')
+        pretrained_weights = os.path.join('/scratch/ainaz/omnidata2/pretrained', 'HRNet_W18_C_ssld_pretrained.pth')
         if os.path.exists(pretrained_weights):
             model.init_weights(pretrained_weights)
             print("Pretrained model loaded!!!")

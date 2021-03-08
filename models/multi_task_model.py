@@ -15,7 +15,7 @@ from aspp import DeepLabHead
 from data.taskonomy_replica_gso_dataset import N_OUTPUTS
 
 
-def get_backbone(name, pretrained=True, dilated=False, fuse_hrnet=False):
+def get_backbone(name, n_channels=3, pretrained=True, dilated=False, fuse_hrnet=False):
     if name == 'resnet18':
         backbone = resnet18(pretrained=pretrained)
         backbone_channels = 512
@@ -25,7 +25,7 @@ def get_backbone(name, pretrained=True, dilated=False, fuse_hrnet=False):
         backbone_channels = 2048
 
     elif name == 'hrnet_w18':
-        backbone = hrnet_w18(pretrained=pretrained)
+        backbone = hrnet_w18(n_channels=n_channels, pretrained=pretrained)
         backbone_channels = [18, 36, 72, 144]
     
     elif name == 'hrnet_w32':
@@ -63,9 +63,9 @@ def get_head(name, backbone_channels, task):
 
 class MultiTaskModel(nn.Module):
     """ Multi-task baseline model with shared encoder + task-specific decoders """
-    def __init__(self, tasks: list, backbone, head, pretrained, dilated):
+    def __init__(self, tasks: list, n_channels, backbone, head, pretrained, dilated):
         super(MultiTaskModel, self).__init__()
-        backbone, backbone_channels = get_backbone(backbone, pretrained, dilated, fuse_hrnet=False)
+        backbone, backbone_channels = get_backbone(backbone, n_channels, pretrained, dilated, fuse_hrnet=False)
         heads = torch.nn.ModuleDict({
             task: get_head(name=head, backbone_channels=backbone_channels, task=task) for task in tasks
             })

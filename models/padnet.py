@@ -86,7 +86,7 @@ class MultiTaskDistillationModule(nn.Module):
 class PADNet(nn.Module):
     def __init__(self, tasks, auxilary_tasks, backbone, pretrained=True):
         super(PADNet, self).__init__()
-        backbone, backbone_channels = get_backbone(backbone, pretrained, dilated=False, fuse_hrnet=True)
+        backbone, backbone_channels = get_backbone(backbone, n_channels=3, pretrained=pretrained, dilated=False, fuse_hrnet=True)
 
         # Backbone
         self.backbone = backbone

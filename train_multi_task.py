@@ -1,6 +1,8 @@
 import os
 import argparse
 import numpy as np
+from PIL import Image
+import pickle
 from einops import rearrange
 import einops as ein
 import random
@@ -8,7 +10,8 @@ from collections import defaultdict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data.sampler import WeightedRandomSampler
 import torchvision
 from torchvision import transforms
 from torchvision.models.segmentation import deeplabv3_resnet101
@@ -29,6 +32,7 @@ from losses.masked_losses import masked_l1_loss
 from models.unet_semseg import UNetSemSeg, UNetSemSegCombined
 from models.seg_hrnet import get_configured_hrnet
 from models.multi_task_model import MultiTaskModel
+from models.padnet import PADNet
 
 RGB_MEAN = torch.Tensor([0.55312, 0.52514, 0.49313]).reshape(3,1,1)
 RGB_STD =  torch.Tensor([0.20555, 0.21775, 0.24044]).reshape(3,1,1)
@@ -47,6 +51,7 @@ def building_in_taskonomy(building):
 
 class MuliTask(pl.LightningModule):
     def __init__(self, 
+                 pretrained_weights_path,
                  image_size, model_name, batch_size, num_workers, lr, lr_step, loss_balancing,
                  taskonomy_variant,
                  taskonomy_root,
@@ -64,6 +69,7 @@ class MuliTask(pl.LightningModule):
             'taskonomy_variant', 'taskonomy_root',
             'experiment_name', 'restore', 'gpus', 'distributed_backend', 'precision', 'val_check_interval', 'max_epochs',
         )
+        self.pretrained_weights_path = pretrained_weights_path
         self.image_size = image_size
         self.model_name = model_name
         self.batch_size = batch_size
@@ -84,27 +90,35 @@ class MuliTask(pl.LightningModule):
 
         self.setup_datasets()
         self.val_samples = self.select_val_samples_for_datasets()
+        self.log_val_imgs_step = 0
 
-        self.model = MultiTaskModel(tasks=['normal', 'segment_semantic', 'depth_zbuffer'], backbone='hrnet_w48',\
-            head='hrnet', pretrained=True, dilated=False)
+        # self.model = MultiTaskModel(tasks=['normal', 'segment_semantic', 'depth_zbuffer'], n_channels=3, \
+        #     backbone='hrnet_w18', head='hrnet', pretrained=True, dilated=False)
+
+        # PAD-Net
+        self.auxiliary_tasks = ['normal', 'segment_semantic', 'edge_occlusion']
+        self.tasks = ['segment_semantic']
+        self.model = PADNet(self.tasks, self.auxiliary_tasks, backbone='hrnet_w18', pretrained=False)
         
 
-        # if self.pretrained_weights_path is not None:
-        #     checkpoint = torch.load(self.pretrained_weights_path)
-        #     # In case we load a checkpoint from this LightningModule
-        #     if 'state_dict' in checkpoint:
-        #         state_dict = {}
-        #         for k, v in checkpoint['state_dict'].items():
-        #             state_dict[k.replace('model.', '')] = v
-        #     else:
-        #         state_dict = checkpoint
-        #     self.model.load_state_dict(state_dict)
+        if self.pretrained_weights_path is not None:
+            checkpoint = torch.load(self.pretrained_weights_path)
+            # In case we load a checkpoint from this LightningModule
+            if 'state_dict' in checkpoint:
+                state_dict = {}
+                for k, v in checkpoint['state_dict'].items():
+                    state_dict[k.replace('model.', '')] = v
+            else:
+                state_dict = checkpoint
+            self.model.load_state_dict(state_dict)
         
         
     @staticmethod
     def add_model_specific_args(parent_parser):
         parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
-        
+        parser.add_argument(
+            '--pretrained_weights_path', type=str, default=None,
+            help='Path to pretrained UNet weights. Set to None for random init. (default: None)')
         parser.add_argument(
             '--image_size', type=int, default=256,
             help='Input image size. (default: 256)')
@@ -141,7 +155,7 @@ class MuliTask(pl.LightningModule):
             '--hypersim_root', type=str, default='/scratch/ainaz/hypersim-dataset2/evermotion/scenes',
             help='Root directory of hypersim dataset.')
         parser.add_argument(
-            '--use_taskonomy', action='store_true', default=True,
+            '--use_taskonomy', action='store_true', default=False,
             help='Set to use taskonomy dataset.')
         parser.add_argument(
             '--use_replica', action='store_true', default=True,
@@ -150,7 +164,7 @@ class MuliTask(pl.LightningModule):
             '--use_gso', action='store_true', default=False,
             help='Set to user GSO dataset.')
         parser.add_argument(
-            '--use_hypersim', action='store_true', default=True,
+            '--use_hypersim', action='store_true', default=False,
             help='Set to user hypersim dataset.')
         parser.add_argument(
             '--model_name', type=str, default='mask_rnn',
@@ -165,82 +179,166 @@ class MuliTask(pl.LightningModule):
         if self.use_gso: self.train_datasets.append('gso')
         if self.use_hypersim: self.train_datasets.append('hypersim')
 
-        self.val_datasets = ['taskonomy', 'replica', 'hypersim'] #, 'gso']
-        tasks = ['rgb', 'normal', 'segment_semantic', 'depth_zbuffer', 'mask_valid']
+        self.val_datasets = ['taskonomy', 'replica', 'hypersim']
+        tasks = ['rgb', 'normal', 'segment_semantic', 'edge_occlusion', 'mask_valid']
 
-        opt_train = TaskonomyReplicaGsoDataset.Options(
-            taskonomy_data_path=self.taskonomy_root,
-            replica_data_path=self.replica_root,
-            gso_data_path=self.gso_root,
-            hypersim_data_path=self.hypersim_root,
+        # opt_train_taskonomy = TaskonomyReplicaGsoDataset.Options(
+        #     tasks=tasks,
+        #     datasets=['taskonomy'],
+        #     split='train',
+        #     taskonomy_variant=self.taskonomy_variant,
+        #     transform='DEFAULT',
+        #     image_size=self.image_size,
+        #     normalize_rgb=True,
+        #     randomize_views=True
+        # )
+        
+        # self.trainset_taskonomy = TaskonomyReplicaGsoDataset(options=opt_train_taskonomy)
+
+        opt_train_replica = TaskonomyReplicaGsoDataset.Options(
             tasks=tasks,
-            datasets=self.train_datasets,
+            datasets=['replica'],
             split='train',
             taskonomy_variant=self.taskonomy_variant,
             transform='DEFAULT',
             image_size=self.image_size,
-            num_positive=self.num_positive,
             normalize_rgb=True,
             randomize_views=True
         )
         
-        self.trainset = TaskonomyReplicaGsoDataset(options=opt_train)
+        self.trainset_replica = TaskonomyReplicaGsoDataset(options=opt_train_replica)
 
-        opt_val = TaskonomyReplicaGsoDataset.Options(
-            taskonomy_data_path=self.taskonomy_root,
-            replica_data_path=self.replica_root,
-            gso_data_path=self.gso_root,
-            hypersim_data_path=self.hypersim_root,
+        # opt_train_hypersim = TaskonomyReplicaGsoDataset.Options(
+        #     tasks=tasks,
+        #     datasets=['hypersim'],
+        #     split='train',
+        #     taskonomy_variant=self.taskonomy_variant,
+        #     transform='DEFAULT',
+        #     image_size=self.image_size,
+        #     normalize_rgb=True,
+        #     randomize_views=True
+        # )
+        
+        # self.trainset_hypersim = TaskonomyReplicaGsoDataset(options=opt_train_hypersim)
+
+
+        opt_val_taskonomy = TaskonomyReplicaGsoDataset.Options(
             split='val',
             taskonomy_variant=self.taskonomy_variant,
             tasks=tasks,
-            datasets=self.val_datasets,
+            datasets=['taskonomy'],
             transform='DEFAULT',
             image_size=self.image_size,
-            num_positive=self.num_positive,
             normalize_rgb=True,
             randomize_views=False
         )
 
-        self.valset = TaskonomyReplicaGsoDataset(options=opt_val)
-        self.valset.randomize_order(seed=99)
+        self.valset_taskonomy = TaskonomyReplicaGsoDataset(options=opt_val_taskonomy)
+        self.valset_taskonomy.randomize_order(seed=99)
+
+        opt_val_replica = TaskonomyReplicaGsoDataset.Options(
+            split='val',
+            taskonomy_variant=self.taskonomy_variant,
+            tasks=tasks,
+            datasets=['replica'],
+            transform='DEFAULT',
+            image_size=self.image_size,
+            normalize_rgb=True,
+            randomize_views=False
+        )
+
+        self.valset_replica = TaskonomyReplicaGsoDataset(options=opt_val_replica)
+        self.valset_replica.randomize_order(seed=99)
+
+        opt_val_hypersim = TaskonomyReplicaGsoDataset.Options(
+            split='val',
+            taskonomy_variant=self.taskonomy_variant,
+            tasks=tasks,
+            datasets=['hypersim'],
+            transform='DEFAULT',
+            image_size=self.image_size,
+            normalize_rgb=True,
+            randomize_views=False
+        )
+
+        self.valset_hypersim = TaskonomyReplicaGsoDataset(options=opt_val_hypersim)
+        self.valset_hypersim.randomize_order(seed=99)
 
         print('Loaded training and validation sets:')
-        print(f'Train set contains {len(self.trainset)} samples.')
-        print(f'Validation set contains {len(self.valset)} samples.')
+        # print(f'Train set contains {len(self.trainset)} samples.')
+        # print(f'Validation set (combined) contains {len(self.valset_combined)} samples.')
+        # print(f'Train set (taskonomy) contains {len(self.trainset_taskonomy)} samples.')
+        print(f'Train set (replica) contains {len(self.trainset_replica)} samples.')
+        # print(f'Train set (hypersim) contains {len(self.trainset_hypersim)} samples.')
+        print(f'Validation set (taskonomy) contains {len(self.valset_taskonomy)} samples.')
+        print(f'Validation set (replica) contains {len(self.valset_replica)} samples.')
+        print(f'Validation set (hypersim) contains {len(self.valset_hypersim)} samples.')
+
+
     
     def train_dataloader(self):
         return DataLoader(
-            self.trainset, batch_size=self.batch_size, shuffle=True, 
+            self.trainset_replica, batch_size=self.batch_size, shuffle=True, 
+            num_workers=self.num_workers, pin_memory=False
+        )
+
+    def train_dataloader_multi(self):
+        taskonomy_count = len(self.trainset_taskonomy)
+        replica_count = len(self.trainset_replica)
+        hypersim_count = len(self.trainset_hypersim)
+        dataset_sample_count = torch.tensor([taskonomy_count, replica_count, hypersim_count])
+        weight = 1. / dataset_sample_count.float()
+        print("!!!!!!!!!!! ", weight, dataset_sample_count)
+        samples_weight = torch.tensor([weight[0]] * taskonomy_count + [weight[1]] * replica_count + [weight[2]] * hypersim_count)
+        sampler = WeightedRandomSampler(samples_weight, len(samples_weight))
+        trainset = ConcatDataset([self.trainset_taskonomy, self.trainset_replica, self.trainset_hypersim])
+        return DataLoader(
+            trainset, batch_size=self.batch_size, sampler=sampler, 
             num_workers=self.num_workers, pin_memory=False
         )
         
     def val_dataloader(self):
-        return DataLoader(
-            self.valset, batch_size=self.batch_size, shuffle=False, 
+        taskonomy_dl = DataLoader(
+            self.valset_taskonomy, batch_size=self.batch_size, shuffle=False, 
             num_workers=self.num_workers, pin_memory=False
         )
-    
+        replica_dl = DataLoader(
+            self.valset_replica, batch_size=self.batch_size, shuffle=False, 
+            num_workers=self.num_workers, pin_memory=False
+        )
+        hypersim_dl = DataLoader(
+            self.valset_hypersim, batch_size=self.batch_size, shuffle=False, 
+            num_workers=self.num_workers, pin_memory=False
+        )
+        return [taskonomy_dl, replica_dl, hypersim_dl]
+
     def forward(self, x):
         return self.model(x)
     
     def training_step(self, batch, batch_idx):
         res = self.shared_step(batch, train=True)
         # Logging
-        self.log('train_loss_supervised', res['loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1)
-        for task in ['semantic', 'normal', 'depth']:
+        self.log('train_loss', res['loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1)
+        for task in ['semantic', 'normal_initial', 'edge3d_initial', 'semantic_initial']:
             self.log(f'train_{task}_loss', res[f'{task}_loss'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
             self.log(f'{task}_loss_weight', res[f'{task}_loss_weight'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
         
         return {'loss': res['loss']}
     
-    def validation_step(self, batch, batch_idx):
+    def validation_step_combined(self, batch, batch_idx):
         res = self.shared_step(batch, train=False)
         # Logging
-        self.log('val_loss_supervised', res['loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1)
+        self.log('val_loss', res['loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1, on_epoch=True)
         for task in ['semantic', 'normal', 'depth']:
-            self.log(f'val_{task}_loss', res[f'{task}_loss'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
+            self.log(f'val_{task}_loss', res[f'{task}_loss'], prog_bar=False, logger=True, sync_dist=self.gpus>1, on_epoch=True)
         return {'loss': res['loss']}
+
+    def validation_step(self, batch, batch_idx, dataset_idx):
+        res = self.shared_step(batch, train=False)
+        dataset = self.val_datasets[dataset_idx]
+        res['dataset'] = dataset
+        return res
+
 
     def make_valid_mask(self, mask_float, max_pool_size=4, return_small_mask=False):
         '''
@@ -273,11 +371,12 @@ class MuliTask(pl.LightningModule):
         mask_valid = self.make_valid_mask(batch['positive']['mask_valid'])
         mask_valid_semantic = mask_valid.squeeze(1)
         mask_valid_normal = mask_valid.repeat_interleave(3,1)
-        mask_valid_depth = mask_valid.clone()
+        mask_valid_edge = mask_valid.clone()
         rgb = batch['positive']['rgb']
         semantic = batch['positive']['segment_semantic']
         normal_gt = batch['positive']['normal']
-        depth_gt = batch['positive']['depth_zbuffer']
+        edge_occlusion_gt = batch['positive']['edge_occlusion']
+        # depth_gt = batch['positive']['depth_zbuffer']
         semantic_gt = semantic[:,:,:,0]
 
         # background and undefined classes are labeled as 0
@@ -288,27 +387,50 @@ class MuliTask(pl.LightningModule):
         semantic_gt *= mask_valid_semantic # invalid parts of the mesh also have undefined label (0)
         semantic_gt -= 1  # the model should not predict undefined and background classes
 
-        # Forward pass 
-        preds = self(rgb)
-        normal_preds = preds['normal']
-        # normal_preds = torch.clamp(normal_preds, 0, 1)
-        semantic_preds = preds['segment_semantic']
-        depth_preds = preds['depth_zbuffer']
-
-        criterion = nn.CrossEntropyLoss(ignore_index=-1)
-        loss_normal = masked_l1_loss(normal_preds, normal_gt, mask_valid_normal)
-        loss_semantic = criterion(semantic_preds, semantic_gt)
-        loss_depth = masked_l1_loss(depth_preds, depth_gt, mask_valid_depth)
-
-        losses = {'semantic':loss_semantic, 'normal':loss_normal, 'depth':loss_depth}
-          
         # Compute loss weights
         if self.loss_balancing == 'grad_norm' and train and len(losses) > 1:
             loss_weights = compute_grad_norm_losses(losses, self.model.backbone.layer4)
         else:
-            loss_weights = {'semantic': 1, 'normal':10, 'depth':10}
+            loss_weights = {'semantic': 1, 'normal_initial':10, 'edge3d_initial':100, 'semantic_initial':1}
 
+        # Forward pass MultiTaskModel
+        # preds = self(rgb)
+        # normal_preds = preds['normal']
+        # normal_preds = torch.clamp(normal_preds, -1, 1)
+        # semantic_preds = preds['segment_semantic']
+        # depth_preds = preds['depth_zbuffer']
+        # depth_preds = torch.clamp(depth_preds, -1, 1)
+
+        # loss_normal = masked_l1_loss(normal_preds, normal_gt, mask_valid_normal)
+        # loss_semantic = criterion(semantic_preds, semantic_gt)
+        # loss_depth = masked_l1_loss(depth_preds, depth_gt, mask_valid_depth)
+
+        # losses = {'semantic':loss_semantic, 'normal':loss_normal, 'edge3d':loss_edge}
+        # total_loss = sum([losses[loss_name] * loss_weights[loss_name] for loss_name in losses.keys()])
+
+
+        # Forward pass PAD-Net
+        preds = self(rgb)
+
+        # Losses initial task predictions (deepsup)
+        normal_preds_initial = F.interpolate(preds['initial_normal'], self.image_size, mode='bilinear')
+        semantic_preds_initial = F.interpolate(preds['initial_segment_semantic'], self.image_size, mode='bilinear')
+        edge_preds_initial = F.interpolate(preds['initial_edge_occlusion'], self.image_size, mode='bilinear')
+        loss_normal_initial = masked_l1_loss(normal_preds_initial, normal_gt, mask_valid_normal)
+        loss_semantic_initial = criterion(semantic_preds_initial, semantic_gt)
+        loss_edge_initial = masked_l1_loss(edge_preds_initial, edge_occlusion_gt, mask_valid_edge)
+
+        # Losses at output  
+        semantic_preds = preds['segment_semantic']
+        loss_semantic = criterion(semantic_preds, semantic_gt)
+
+        losses = {
+            'semantic':loss_semantic, 
+            'normal_initial':loss_normal_initial, 
+            'edge3d_initial':loss_edge_initial, 
+            'semantic_initial':loss_semantic_initial}
         total_loss = sum([losses[loss_name] * loss_weights[loss_name] for loss_name in losses.keys()])
+
 
         for loss_name, loss in losses.items(): 
             step_results.update({f'{loss_name}_loss': loss})   
@@ -322,59 +444,78 @@ class MuliTask(pl.LightningModule):
  
 
     def validation_epoch_end(self, outputs):
+        counts = {'taskonomy':0, 'replica':0, 'hypersim':0, 'all':0}
+        losses = {}
+        losses = defaultdict(lambda: 0, losses)
+        for dataloader_outputs in outputs:
+            for output in dataloader_outputs:
+                dataset = output['dataset']
+                counts[dataset] += 1
+                counts['all'] += 1
+                for loss_name in output:
+                    if loss_name.__contains__('_loss'):
+                        losses[f'{dataset}_{loss_name}'] += output[loss_name]
+                        losses[loss_name] += output[loss_name]
+
+        losses['loss'] = losses['semantic_loss'] + losses['normal_loss'] + losses['edge3d_loss']
+        for loss_name in losses:
+            if loss_name.split('_')[0] in self.val_datasets:
+                losses[loss_name] /= counts[loss_name.split('_')[0]]
+            else:
+                losses[loss_name] /= counts['all']
+
+            if loss_name.__contains__('semantic') and not loss_name.__contains__('initial'):
+                self.log(f'val_{loss_name}', losses[loss_name], prog_bar=False, logger=True, sync_dist=self.gpus>1)
+
         # Log validation set and OOD debug images using W&B
-        self.log_validation_example_images(num_images=10)
+        if self.global_step >= self.log_val_imgs_step + 15000 or self.global_step < 2000:
+            self.log_val_imgs_step = self.global_step
+            self.log_validation_example_images(num_images=10)
+            self.log_ood_example_images(num_images=10)
 
     def select_val_samples_for_datasets(self):
         frls = 0
         val_imgs = defaultdict(list)
-        while len(val_imgs['replica']) + len(val_imgs['taskonomy']) + \
-             len(val_imgs['hypersim']) + len(val_imgs['gso']) < 95:
-            idx = random.randint(0, len(self.valset) - 1)
-            example = self.valset[idx]
+        # with open('/scratch/ainaz/omnidata2/val_samples/hypersim_val_indices.pkl', 'rb') as f:
+        #     val_imgs['hypersim'] = pickle.load(f)
+
+        while len(val_imgs['hypersim']) < 40:
+            idx = random.randint(0, len(self.valset_hypersim) - 1)
+            val_imgs['hypersim'].append(idx)
+
+        while len(val_imgs['replica']) < 25:
+            idx = random.randint(0, len(self.valset_replica) - 1)
+            example = self.valset_replica[idx]
             building = example['positive']['building']
-            print(len(val_imgs['replica']), len(val_imgs['taskonomy']), len(val_imgs['hypersim']), len(val_imgs['gso']), building)
-            
-            if building_in_hypersim(building) and len(val_imgs['hypersim']) < 40:
-                val_imgs['hypersim'].append(idx)
-
-            elif building_in_replica(building) and len(val_imgs['replica']) < 25:
-                if building.startswith('frl') and frls > 15:
-                    continue
-                if building.startswith('frl'): frls += 1
-                val_imgs['replica'].append(idx)
-
-            elif building_in_gso(building) and len(val_imgs['gso']) < 20:
-                val_imgs['gso'].append(idx)
-
-            elif building_in_taskonomy(building) and len(val_imgs['taskonomy']) < 30:
-                val_imgs['taskonomy'].append(idx)
-        return val_imgs
-
-    def select_val_samples_for_datasets2(self):
-        val_imgs = defaultdict(list)
+            if building.startswith('frl') and frls > 12:
+                continue
+            if building.startswith('frl'): frls += 1
+            val_imgs['replica'].append(idx)
         while len(val_imgs['taskonomy']) < 20:
-            idx = random.randint(0, len(self.valset))
+            idx = random.randint(0, len(self.valset_taskonomy) - 1)
             val_imgs['taskonomy'].append(idx)
+
         return val_imgs
+
 
     def log_validation_example_images(self, num_images=10):
         self.model.eval()
         all_imgs = defaultdict(list)
-
         for dataset in self.val_datasets:
             for img_idx in self.val_samples[dataset]:
-                example = self.valset[img_idx]
+                if dataset == 'taskonomy': example = self.valset_taskonomy[img_idx]
+                elif dataset == 'replica': example = self.valset_replica[img_idx]
+                elif dataset == 'hypersim': example = self.valset_hypersim[img_idx]
                 rgb = example['positive']['rgb'].to(self.device)
                 semantic = example['positive']['segment_semantic']
-                normal_gt = example['positive']['normal']
-                depth_gt = example['positive']['depth_zbuffer']
+                # normal_gt = example['positive']['normal']
+                # depth_gt = example['positive']['depth_zbuffer']
                 mask_valid = self.make_valid_mask(example['positive']['mask_valid'])
                 mask_valid_semantic = mask_valid.squeeze()
-                mask_valid_normal = mask_valid.squeeze(0).repeat_interleave(3,0)
-                mask_valid_depth = mask_valid.squeeze(0)
-                normal_gt[~mask_valid_normal] = 0
-                depth_gt[~mask_valid_depth] = 0
+                # mask_valid_normal = mask_valid.squeeze(0).repeat_interleave(3,0)
+                # mask_valid_depth = mask_valid.squeeze(0)
+                # normal_gt[~mask_valid_normal] = 0
+                # depth_gt[~mask_valid_depth] = 0
 
                 if dataset == 'gso': semantic_gt = 2**8 * semantic[:,:,0] + semantic[:,:,1]
                 else: semantic_gt = semantic[:,:,0]
@@ -390,9 +531,9 @@ class MuliTask(pl.LightningModule):
                 with torch.no_grad(): 
                     preds = self.model.forward(rgb.unsqueeze(0))
                     semantic_pred = preds['segment_semantic'].squeeze(0)
-                    normal_pred = preds['normal'].squeeze(0)
-                    normal_pred = torch.clamp(normal_pred, 0, 1)
-                    depth_pred = preds['depth_zbuffer'].squeeze(0)
+                    # normal_pred = preds['normal'].squeeze(0)
+                    # normal_pred = torch.clamp(normal_pred, 0, 1)
+                    # depth_pred = preds['depth_zbuffer'].squeeze(0)
                     CLASS_COLORS = COMBINED_CLASS_COLORS
 
                 # semantic
@@ -425,23 +566,64 @@ class MuliTask(pl.LightningModule):
                 all_imgs[f'pred-semantic-{dataset}'].append(semantic_pred)
 
                 # normals
-                normal_gt = normal_gt.permute(1, 2, 0).detach().cpu().numpy()
-                normal_gt = wandb.Image(normal_gt, caption=f'GT-Normal I{img_idx}')
-                all_imgs[f'gt-normal-{dataset}'].append(normal_gt)
-                normal_pred = normal_pred.permute(1, 2, 0).detach().cpu().numpy()
-                normal_pred = wandb.Image(normal_pred, caption=f'Pred-Normal I{img_idx}')
-                all_imgs[f'pred-normal-{dataset}'].append(normal_pred)
+                # normal_gt = normal_gt.permute(1, 2, 0).detach().cpu().numpy()
+                # normal_gt = wandb.Image(normal_gt, caption=f'GT-Normal I{img_idx}')
+                # all_imgs[f'gt-normal-{dataset}'].append(normal_gt)
+                # normal_pred = normal_pred.permute(1, 2, 0).detach().cpu().numpy()
+                # normal_pred = wandb.Image(normal_pred, caption=f'Pred-Normal I{img_idx}')
+                # all_imgs[f'pred-normal-{dataset}'].append(normal_pred)
 
                 # depth
-                depth_gt = depth_gt.permute(1, 2, 0).detach().cpu().numpy()
-                depth_gt = wandb.Image(depth_gt, caption=f'GT-Depth I{img_idx}')
-                all_imgs[f'gt-depth-{dataset}'].append(depth_gt)
-                depth_pred = depth_pred.permute(1, 2, 0).detach().cpu().numpy()
-                depth_pred = wandb.Image(depth_pred, caption=f'Pred-Depth I{img_idx}')
-                all_imgs[f'pred-depth-{dataset}'].append(depth_pred)
+                # depth_gt = depth_gt.permute(1, 2, 0).detach().cpu().numpy()
+                # depth_gt = wandb.Image(depth_gt, caption=f'GT-Depth I{img_idx}')
+                # all_imgs[f'gt-depth-{dataset}'].append(depth_gt)
+                # depth_pred = depth_pred.permute(1, 2, 0).detach().cpu().numpy()
+                # depth_pred = wandb.Image(depth_pred, caption=f'Pred-Depth I{img_idx}')
+                # all_imgs[f'pred-depth-{dataset}'].append(depth_pred)
 
 
+        self.logger.experiment.log(all_imgs, step=self.global_step)
 
+    def log_ood_example_images(self, data_dir='/datasets/evaluation_ood/real_world/images', num_images=15):
+        self.model.eval()
+
+        all_imgs = defaultdict(list)
+
+        for img_idx in range(num_images):
+            rgb = Image.open(f'{data_dir}/{img_idx:05d}.png').convert('RGB')
+            rgb = self.trainset_replica.transform['rgb'](rgb).to(self.device)
+
+            with torch.no_grad():
+                preds = self.model.forward(rgb.unsqueeze(0))
+                semantic_pred = preds['segment_semantic'].squeeze(0)
+                # normal_pred = preds['normal'].squeeze(0)
+                # normal_pred = torch.clamp(normal_pred, 0, 1)
+                # depth_pred = preds['depth_zbuffer'].squeeze(0)
+                CLASS_COLORS = COMBINED_CLASS_COLORS
+
+            rgb_np = rgb.permute(1, 2, 0).detach().cpu().numpy()
+            rgb = wandb.Image(rgb_np, caption=f'RGB OOD {img_idx}')
+            all_imgs['rgb-ood'].append(rgb)
+
+            # normal_pred = wandb.Image(normal_pred, caption=f'Pred-Normal OOD {img_idx}')
+            # all_imgs['pred-normal-ood'].append(normal_pred)
+
+            # depth_pred = wandb.Image(depth_pred, caption=f'Pred-Depth OOD {img_idx}')
+            # all_imgs['pred-depth-ood'].append(depth_pred)
+
+            # semantics
+            mask_preds = F.softmax(semantic_pred, dim=0)
+            mask_preds = torch.argmax(mask_preds, dim=0) + 1 # model does not predict background/undefined
+            metadata = MetadataCatalog.get('ood')
+            metadata.stuff_classes = COMBINED_CLASS_LABELS
+            metadata.things_classes = []
+            metadata.stuff_colors = [[c * 255.0 for c in color] for color in CLASS_COLORS]
+            visualizer_pred = Visualizer(rgb_np * 255.0, metadata=metadata)
+            vis_pred = visualizer_pred.draw_sem_seg(mask_preds.cpu(), area_threshold=None, alpha=0.6)
+            semantic_pred_im = np.uint8(vis_pred.get_image())
+
+            semantic_pred = wandb.Image(np.uint8(semantic_pred_im), caption=f'Pred-Semantic OOD {img_idx}')
+            all_imgs[f'pred-semantic-ood'].append(semantic_pred)
 
         self.logger.experiment.log(all_imgs, step=self.global_step)
 
@@ -466,7 +648,7 @@ if __name__ == '__main__':
         '--restore', type=str, default=None,
         help='Weights & Biases ID to restore and resume training (default: None)')
     parser.add_argument(
-        '--save-dir', type=str, default='exps_semseg',
+        '--save-dir', type=str, default='experiments/multitask',
         help='Directory in which to save this experiments. (default: exps_semseg/)')   
 
     # Add PyTorch Lightning Module and Trainer args
@@ -492,16 +674,16 @@ if __name__ == '__main__':
     # Save weights like ./checkpoints/taskonomy_semseg/W&BID/epoch-X.ckpt
     checkpoint_callback = ModelCheckpoint(
         filepath=os.path.join(checkpoint_dir, '{epoch}'),
-        verbose=True, monitor='val_loss_supervised', mode='min', period=1, save_last=True, save_top_k=10
+        verbose=True, monitor='val_semantic_loss', mode='min', period=1, save_last=True, save_top_k=20
     )
     
     if args.restore is None:
         trainer = pl.Trainer.from_argparse_args(args, logger=wandb_logger, \
-            checkpoint_callback=checkpoint_callback, gpus=[0, 1], auto_lr_find=False, accelerator='ddp')
+            checkpoint_callback=checkpoint_callback, gpus=[0, 1], auto_lr_find=False, accelerator='ddp', gradient_clip_val=10)
     else:
         trainer = pl.Trainer(
-            resume_from_checkpoint=os.path.join(f'./checkpoints/{wandb_logger.name}/{args.restore}/last.ckpt'), 
-            logger=wandb_logger, checkpoint_callback=checkpoint_callback
+            resume_from_checkpoint=os.path.join(f'{args.save_dir}/checkpoints/{wandb_logger.name}/{args.restore}/last.ckpt'), 
+            logger=wandb_logger, checkpoint_callback=checkpoint_callback, gpus=[0, 1], accelerator='ddp'
         )
 
     # trainer.tune(model)

@@ -163,7 +163,7 @@ class ConsistentNormal(pl.LightningModule):
     def setup_datasets(self):
         self.num_positive = 1 
 
-        tasks = ['rgb', 'normal', 'segment_semantic', 'mask_valid']
+        tasks = ['rgb', 'normal', 'segment_semantic', 'depth_zbuffer', 'mask_valid']
 
         self.train_datasets = []
         if self.use_taskonomy: self.train_datasets.append('taskonomy')
@@ -172,6 +172,8 @@ class ConsistentNormal(pl.LightningModule):
         if self.use_hypersim: self.train_datasets.append('hypersim')
 
         self.val_datasets = ['taskonomy', 'replica', 'hypersim']
+        # self.val_datasets = ['hypersim']
+
 
         opt_train = TaskonomyReplicaGsoDataset.Options(
             taskonomy_data_path=self.taskonomy_root,
@@ -232,13 +234,13 @@ class ConsistentNormal(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         res = self.shared_step(batch, train=True)
         # Logging
-        self.log('train_loss_supervised', res['loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1)
+        self.log('train_normal_loss', res['loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1)
         return {'loss': res['loss']}
 
     def validation_step(self, batch, batch_idx):
         res = self.shared_step(batch, train=False)
         # Logging
-        self.log('val_loss_supervised', res['loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1)
+        self.log('val_normal_loss', res['loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1)
         return {'loss': res['loss']}
     
     
@@ -314,27 +316,31 @@ class ConsistentNormal(pl.LightningModule):
     def select_val_samples_for_datasets(self):
         frls = 0
         val_imgs = defaultdict(list)
-        while len(val_imgs['replica']) + len(val_imgs['taskonomy']) + \
-             len(val_imgs['hypersim']) + len(val_imgs['gso']) < 95:
+
+        with open('/scratch/ainaz/omnidata2/val_samples/hypersim_val_indices_combined.pkl', 'rb') as f:
+            val_imgs['hypersim'] = pickle.load(f)
+
+        if self.val_datasets == ['hypersim']: return val_imgs
+
+        while len(val_imgs['replica']) + len(val_imgs['taskonomy']) < 60:
+
             idx = random.randint(0, len(self.valset) - 1)
             example = self.valset[idx]
             building = example['positive']['building']
             print(len(val_imgs['replica']), len(val_imgs['taskonomy']), len(val_imgs['hypersim']), len(val_imgs['gso']), building)
             
-            if building_in_hypersim(building) and len(val_imgs['hypersim']) < 40:
-                val_imgs['hypersim'].append(idx)
+            # if building_in_hypersim(building) and len(val_imgs['hypersim']) < 50:
+            #     val_imgs['hypersim'].append(idx)
 
-            elif building_in_replica(building) and len(val_imgs['replica']) < 25:
+            if building_in_replica(building) and len(val_imgs['replica']) < 30:
                 if building.startswith('frl') and frls > 15:
                     continue
                 if building.startswith('frl'): frls += 1
                 val_imgs['replica'].append(idx)
 
-            elif building_in_gso(building) and len(val_imgs['gso']) < 20:
-                val_imgs['gso'].append(idx)
-
             elif building_in_taskonomy(building) and len(val_imgs['taskonomy']) < 30:
                 val_imgs['taskonomy'].append(idx)
+
         return val_imgs
 
     def log_validation_example_images(self, num_images=20):
@@ -425,7 +431,7 @@ if __name__ == '__main__':
         '--save-on-error', type=bool, default=True,
         help='Save crash information on fatal error. (default: True)')    
     parser.add_argument(
-        '--save-dir', type=str, default='exps',
+        '--save-dir', type=str, default='experiments/normal',
         help='Directory in which to save this experiments. (default: exps/)')    
 
 
@@ -455,7 +461,7 @@ if __name__ == '__main__':
     checkpoint_dir = os.path.join(args.save_dir, 'checkpoints', f'{wandb_logger.name}', f'{wandb_logger.experiment.id}')
     checkpoint_callback = ModelCheckpoint(
         filepath=os.path.join(checkpoint_dir, '{epoch}'),
-        verbose=True, monitor='val_loss_supervised', mode='min', period=1, save_last=True, save_top_k=3
+        verbose=True, monitor='val_normal_loss', mode='min', period=1, save_last=True, save_top_k=3
     )
 
     if args.restore is None:
