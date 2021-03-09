@@ -87,7 +87,7 @@ class NormalTest(pl.LightningModule):
         self.setup_datasets()
 
         # self.model = UNet(in_channels=3, out_channels=3)
-        self.model = MultiTaskModel(tasks=['normal', 'segment_semantic', 'depth_zbuffer'], backbone='hrnet_w48', 
+        self.model = MultiTaskModel(tasks=['normal'], n_channels=3, backbone='hrnet_w48', 
         head='hrnet', pretrained=False, dilated=False)
 
         if self.pretrained_weights_path is not None:
@@ -138,7 +138,7 @@ class NormalTest(pl.LightningModule):
             '--nyu_root', type=str, default='/datasets/nyu_official',
             help='Root directory of NYU dataset.')
         parser.add_argument(
-            '--oasis_root', type=str, default='/scratch/ainaz/OASIS/OASIS_test/image',
+            '--oasis_root', type=str, default='/scratch/ainaz/OASIS/OASIS_trainval/image',
             help='Root directory of OASIS dataset.')
         parser.add_argument(
             '--use_taskonomy', action='store_true', default=False,
@@ -238,8 +238,9 @@ class NormalTest(pl.LightningModule):
             normal_preds = torch.clamp(normal_preds, 0, 1)
 
         elif self.use_oasis:
-            rgb = batch
-            normal_preds = self(rgb) #['normal']
+            rgb, normal_gt, mask_valid = batch
+            mask_valid = mask_valid != 0
+            normal_preds = self(rgb)
             normal_preds = torch.clamp(normal_preds, 0, 1)
             
         else:     
@@ -256,26 +257,26 @@ class NormalTest(pl.LightningModule):
         # save samples
         if batch_idx % 4 == 0:
             pred = np.uint8(255 * normal_preds[0].cpu().permute((1, 2, 0)).numpy())
-            # gt = np.uint8(255 * normal_gt[0].cpu().permute((1, 2, 0)).numpy())
-            # rgb = np.uint8(255 * rgb[0].cpu().permute((1, 2, 0)).numpy())
-            # mask = np.uint8(255 * mask_valid[0].cpu().permute((1, 2, 0)).numpy())
+            gt = np.uint8(255 * normal_gt[0].cpu().permute((1, 2, 0)).numpy())
+            rgb = np.uint8(255 * rgb[0].cpu().permute((1, 2, 0)).numpy())
+            mask = np.uint8(255 * mask_valid[0].cpu().permute((1, 2, 0)).numpy())
 
             transform = transforms.Resize(512, Image.NEAREST)
-            # im = Image.fromarray(rgb)
-            # transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_rgb.png'))
-            # im = Image.fromarray(gt)
-            # im.save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_gt.png'))
+            im = Image.fromarray(rgb)
+            transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_rgb.png'))
+            im = Image.fromarray(gt)
+            transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_gt.png'))
             im = Image.fromarray(pred)
-            im.save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_multitask', f'{batch_idx}_{self.model_name}_pred.png'))
-            # im = Image.fromarray(mask)
-            # im.save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_mask.png'))
+            transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_{self.model_name}_pred.png'))
+            im = Image.fromarray(mask)
+            transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_mask.png'))
 
 
-        # for pred, target, mask in zip(normal_preds, normal_gt, mask_valid):
-        #     metrics = get_metrics(pred.cpu().unsqueeze(0), target.cpu().unsqueeze(0), \
-        #         masks=mask.cpu().unsqueeze(0), task='normal')
-        #     for metric_name, metric_val in metrics.items(): 
-        #         self.metrics[metric_name].push(metric_val)
+        for pred, target, mask in zip(normal_preds, normal_gt, mask_valid):
+            metrics = get_metrics(pred.cpu().unsqueeze(0), target.cpu().unsqueeze(0), \
+                masks=mask.cpu().unsqueeze(0), task='normal')
+            for metric_name, metric_val in metrics.items(): 
+                self.metrics[metric_name].push(metric_val)
     
 
     def make_valid_mask(self, mask_float, max_pool_size=4, return_small_mask=False):

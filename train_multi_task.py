@@ -182,18 +182,18 @@ class MuliTask(pl.LightningModule):
         self.val_datasets = ['taskonomy', 'replica', 'hypersim']
         tasks = ['rgb', 'normal', 'segment_semantic', 'edge_occlusion', 'mask_valid']
 
-        # opt_train_taskonomy = TaskonomyReplicaGsoDataset.Options(
-        #     tasks=tasks,
-        #     datasets=['taskonomy'],
-        #     split='train',
-        #     taskonomy_variant=self.taskonomy_variant,
-        #     transform='DEFAULT',
-        #     image_size=self.image_size,
-        #     normalize_rgb=True,
-        #     randomize_views=True
-        # )
+        opt_train_taskonomy = TaskonomyReplicaGsoDataset.Options(
+            tasks=tasks,
+            datasets=['taskonomy'],
+            split='train',
+            taskonomy_variant=self.taskonomy_variant,
+            transform='DEFAULT',
+            image_size=self.image_size,
+            normalize_rgb=True,
+            randomize_views=True
+        )
         
-        # self.trainset_taskonomy = TaskonomyReplicaGsoDataset(options=opt_train_taskonomy)
+        self.trainset_taskonomy = TaskonomyReplicaGsoDataset(options=opt_train_taskonomy)
 
         opt_train_replica = TaskonomyReplicaGsoDataset.Options(
             tasks=tasks,
@@ -208,18 +208,18 @@ class MuliTask(pl.LightningModule):
         
         self.trainset_replica = TaskonomyReplicaGsoDataset(options=opt_train_replica)
 
-        # opt_train_hypersim = TaskonomyReplicaGsoDataset.Options(
-        #     tasks=tasks,
-        #     datasets=['hypersim'],
-        #     split='train',
-        #     taskonomy_variant=self.taskonomy_variant,
-        #     transform='DEFAULT',
-        #     image_size=self.image_size,
-        #     normalize_rgb=True,
-        #     randomize_views=True
-        # )
+        opt_train_hypersim = TaskonomyReplicaGsoDataset.Options(
+            tasks=tasks,
+            datasets=['hypersim'],
+            split='train',
+            taskonomy_variant=self.taskonomy_variant,
+            transform='DEFAULT',
+            image_size=self.image_size,
+            normalize_rgb=True,
+            randomize_views=True
+        )
         
-        # self.trainset_hypersim = TaskonomyReplicaGsoDataset(options=opt_train_hypersim)
+        self.trainset_hypersim = TaskonomyReplicaGsoDataset(options=opt_train_hypersim)
 
 
         opt_val_taskonomy = TaskonomyReplicaGsoDataset.Options(
@@ -267,22 +267,22 @@ class MuliTask(pl.LightningModule):
         print('Loaded training and validation sets:')
         # print(f'Train set contains {len(self.trainset)} samples.')
         # print(f'Validation set (combined) contains {len(self.valset_combined)} samples.')
-        # print(f'Train set (taskonomy) contains {len(self.trainset_taskonomy)} samples.')
+        print(f'Train set (taskonomy) contains {len(self.trainset_taskonomy)} samples.')
         print(f'Train set (replica) contains {len(self.trainset_replica)} samples.')
-        # print(f'Train set (hypersim) contains {len(self.trainset_hypersim)} samples.')
+        print(f'Train set (hypersim) contains {len(self.trainset_hypersim)} samples.')
         print(f'Validation set (taskonomy) contains {len(self.valset_taskonomy)} samples.')
         print(f'Validation set (replica) contains {len(self.valset_replica)} samples.')
         print(f'Validation set (hypersim) contains {len(self.valset_hypersim)} samples.')
 
 
     
-    def train_dataloader(self):
-        return DataLoader(
-            self.trainset_replica, batch_size=self.batch_size, shuffle=True, 
-            num_workers=self.num_workers, pin_memory=False
-        )
+    # def train_dataloader(self):
+    #     return DataLoader(
+    #         self.trainset_replica, batch_size=self.batch_size, shuffle=True, 
+    #         num_workers=self.num_workers, pin_memory=False
+    #     )
 
-    def train_dataloader_multi(self):
+    def train_dataloader(self):
         taskonomy_count = len(self.trainset_taskonomy)
         replica_count = len(self.trainset_replica)
         hypersim_count = len(self.trainset_hypersim)
@@ -679,7 +679,7 @@ if __name__ == '__main__':
     
     if args.restore is None:
         trainer = pl.Trainer.from_argparse_args(args, logger=wandb_logger, \
-            checkpoint_callback=checkpoint_callback, gpus=[0, 1], auto_lr_find=False, accelerator='ddp', gradient_clip_val=10)
+            checkpoint_callback=checkpoint_callback, gpus=[0, 1], auto_lr_find=False, accelerator='ddp', replace_sampler_ddp=False, gradient_clip_val=10)
     else:
         trainer = pl.Trainer(
             resume_from_checkpoint=os.path.join(f'{args.save_dir}/checkpoints/{wandb_logger.name}/{args.restore}/last.ckpt'), 

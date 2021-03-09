@@ -544,14 +544,14 @@ def hrnet_w32(pretrained=False):
 
     return model
 
-def hrnet_w48(pretrained=False):
+def hrnet_w48(n_channels, pretrained=False):
     import yaml
     hrnet_cfg = os.path.join(os.path.dirname(__file__), 'hrnet_w48.yml')
      
     with open(hrnet_cfg, 'r') as stream:
         hrnet_cfg = yaml.safe_load(stream)
 
-    model = HighResolutionNet(hrnet_cfg)
+    model = HighResolutionNet(n_channels=n_channels, config=hrnet_cfg)
     if pretrained:
         pretrained_weights = os.path.join('/scratch/ainaz/omnidata2/pretrained', 'hrnet_w48-8ef0771d.pth')
         if os.path.exists(pretrained_weights):

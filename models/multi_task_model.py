@@ -33,7 +33,7 @@ def get_backbone(name, n_channels=3, pretrained=True, dilated=False, fuse_hrnet=
         backbone_channels = [32, 64, 128, 256]
 
     elif name == 'hrnet_w48':
-        backbone = hrnet_w48(pretrained=pretrained)
+        backbone = hrnet_w48(n_channels=n_channels, pretrained=pretrained)
         backbone_channels = [48, 96, 192, 384]
 
     else:
