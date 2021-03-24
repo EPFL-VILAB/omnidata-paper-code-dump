@@ -29,10 +29,10 @@ from data.segment_instance import extract_instances, TASKONOMY_CLASS_LABELS, TAS
         GSO_NUM_CLASSES, GSO_CLASS_COLORS, COMBINED_CLASS_LABELS, COMBINED_CLASS_COLORS, plot_instances, apply_mask
 from losses import compute_grad_norm_losses
 from losses.masked_losses import masked_l1_loss
-from models.unet_semseg import UNetSemSeg, UNetSemSegCombined
-from models.seg_hrnet import get_configured_hrnet
+from models.mtan import MTAN
 from models.multi_task_model import MultiTaskModel
-from models.padnet import PADNet
+from models.cross_stitch import CrossStitchNetwork
+
 
 RGB_MEAN = torch.Tensor([0.55312, 0.52514, 0.49313]).reshape(3,1,1)
 RGB_STD =  torch.Tensor([0.20555, 0.21775, 0.24044]).reshape(3,1,1)
@@ -87,20 +87,55 @@ class MuliTask(pl.LightningModule):
         self.use_replica = use_replica
         self.use_gso = use_gso
         self.use_hypersim = use_hypersim
-
+        
+        self.normalize_rgb = True
         self.setup_datasets()
         self.val_samples = self.select_val_samples_for_datasets()
         self.log_val_imgs_step = 0
 
-        # self.model = MultiTaskModel(tasks=['normal', 'segment_semantic', 'depth_zbuffer'], n_channels=3, \
-        #     backbone='hrnet_w18', head='hrnet', pretrained=True, dilated=False)
-
-        # PAD-Net
-        self.auxiliary_tasks = ['normal', 'segment_semantic', 'edge_occlusion']
-        self.tasks = ['segment_semantic']
-        self.model = PADNet(self.tasks, self.auxiliary_tasks, backbone='hrnet_w18', pretrained=False)
         
+        # self.tasks = ['segment_semantic', 'edge_occlusion', 'depth_zbuffer', 'keypoints3d']
+        self.tasks = ['segment_semantic']
 
+        stages = ['layer1', 'layer2', 'layer3', 'layer4']
+        channels = {'layer1': 256, 'layer2': 512, 'layer3': 1024, 'layer4': 2048}
+        downsample = {'layer1': True, 'layer2': False, 'layer3': False, 'layer4': False}
+        backbone, head = 'resnet50', 'deeplab'
+
+        # MTAN
+        # self.model = MTAN(
+        #     tasks=self.tasks, 
+        #     backbone=backbone, 
+        #     head=head, 
+        #     stages=stages, 
+        #     channels=channels, 
+        #     downsample=downsample, 
+        #     pretrained=True,
+        #     dilated=True)
+
+        # MTL Baseline
+        self.model = MultiTaskModel(
+            tasks=self.tasks, 
+            n_channels=3, 
+            backbone=backbone, 
+            head=head, 
+            pretrained=True, 
+            dilated=True)
+
+        # Cross-stitch
+        # alpha, beta = 0.9, 0.1
+        # self.model = CrossStitchNetwork(
+        #     tasks=self.tasks, 
+        #     backbone=backbone,
+        #     head=head,
+        #     stages=stages,
+        #     channels=channels,
+        #     alpha=alpha,
+        #     beta=beta,
+        #     pretrained=True,
+        #     dilated=True)
+             
+        
         if self.pretrained_weights_path is not None:
             checkpoint = torch.load(self.pretrained_weights_path)
             # In case we load a checkpoint from this LightningModule
@@ -139,7 +174,7 @@ class MuliTask(pl.LightningModule):
             '--num_workers', type=int, default=16,
             help='Number of workers for DataLoader. (default: 16)')
         parser.add_argument(
-            '--taskonomy_variant', type=str, default='tiny',
+            '--taskonomy_variant', type=str, default='full',
             choices=['full', 'fullplus', 'medium', 'tiny'],
             help='One of [full, fullplus, medium, tiny] (default: fullplus)')
         parser.add_argument(
@@ -180,7 +215,8 @@ class MuliTask(pl.LightningModule):
         if self.use_hypersim: self.train_datasets.append('hypersim')
 
         self.val_datasets = ['taskonomy', 'replica', 'hypersim']
-        tasks = ['rgb', 'normal', 'segment_semantic', 'edge_occlusion', 'mask_valid']
+        # tasks = ['rgb', 'segment_semantic', 'edge_occlusion', 'depth_zbuffer', 'keypoints3d', 'mask_valid']
+        tasks = ['rgb', 'segment_semantic', 'mask_valid']
 
         opt_train_taskonomy = TaskonomyReplicaGsoDataset.Options(
             tasks=tasks,
@@ -319,7 +355,7 @@ class MuliTask(pl.LightningModule):
         res = self.shared_step(batch, train=True)
         # Logging
         self.log('train_loss', res['loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1)
-        for task in ['semantic', 'normal_initial', 'edge3d_initial', 'semantic_initial']:
+        for task in ['semantic']:
             self.log(f'train_{task}_loss', res[f'{task}_loss'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
             self.log(f'{task}_loss_weight', res[f'{task}_loss_weight'], prog_bar=False, logger=True, sync_dist=self.gpus>1)
         
@@ -370,12 +406,17 @@ class MuliTask(pl.LightningModule):
         criterion = nn.CrossEntropyLoss(ignore_index=-1)
         mask_valid = self.make_valid_mask(batch['positive']['mask_valid'])
         mask_valid_semantic = mask_valid.squeeze(1)
-        mask_valid_normal = mask_valid.repeat_interleave(3,1)
-        mask_valid_edge = mask_valid.clone()
+        # mask_valid_normal = mask_valid.repeat_interleave(3,1)
+        # mask_valid_edge3d = mask_valid.clone()
+        # mask_valid_edge2d = mask_valid.clone()
+        # mask_valid_keypoints3d = mask_valid.clone()
+        # mask_valid_depth = mask_valid.clone()
         rgb = batch['positive']['rgb']
         semantic = batch['positive']['segment_semantic']
-        normal_gt = batch['positive']['normal']
-        edge_occlusion_gt = batch['positive']['edge_occlusion']
+        # normal_gt = batch['positive']['normal']
+        # edge_occlusion_gt = batch['positive']['edge_occlusion']
+        # edge_texture_gt = batch['positive']['edge_texture']
+        # keypoints3d_gt = batch['positive']['keypoints3d']
         # depth_gt = batch['positive']['depth_zbuffer']
         semantic_gt = semantic[:,:,:,0]
 
@@ -391,44 +432,39 @@ class MuliTask(pl.LightningModule):
         if self.loss_balancing == 'grad_norm' and train and len(losses) > 1:
             loss_weights = compute_grad_norm_losses(losses, self.model.backbone.layer4)
         else:
-            loss_weights = {'semantic': 1, 'normal_initial':10, 'edge3d_initial':100, 'semantic_initial':1}
-
-        # Forward pass MultiTaskModel
-        # preds = self(rgb)
-        # normal_preds = preds['normal']
-        # normal_preds = torch.clamp(normal_preds, -1, 1)
-        # semantic_preds = preds['segment_semantic']
-        # depth_preds = preds['depth_zbuffer']
-        # depth_preds = torch.clamp(depth_preds, -1, 1)
-
-        # loss_normal = masked_l1_loss(normal_preds, normal_gt, mask_valid_normal)
-        # loss_semantic = criterion(semantic_preds, semantic_gt)
-        # loss_depth = masked_l1_loss(depth_preds, depth_gt, mask_valid_depth)
-
-        # losses = {'semantic':loss_semantic, 'normal':loss_normal, 'edge3d':loss_edge}
-        # total_loss = sum([losses[loss_name] * loss_weights[loss_name] for loss_name in losses.keys()])
+            loss_weights = {
+                'semantic': 1} 
+                # 'normal':10,
+                # 'depth':10, 
+                # 'edge3d':100, 
+                # 'edge2d':10, 
+                # 'keypoints3d':10}
 
 
-        # Forward pass PAD-Net
+        # Forward pass MTAN
         preds = self(rgb)
 
         # Losses initial task predictions (deepsup)
-        normal_preds_initial = F.interpolate(preds['initial_normal'], self.image_size, mode='bilinear')
-        semantic_preds_initial = F.interpolate(preds['initial_segment_semantic'], self.image_size, mode='bilinear')
-        edge_preds_initial = F.interpolate(preds['initial_edge_occlusion'], self.image_size, mode='bilinear')
-        loss_normal_initial = masked_l1_loss(normal_preds_initial, normal_gt, mask_valid_normal)
-        loss_semantic_initial = criterion(semantic_preds_initial, semantic_gt)
-        loss_edge_initial = masked_l1_loss(edge_preds_initial, edge_occlusion_gt, mask_valid_edge)
-
-        # Losses at output  
         semantic_preds = preds['segment_semantic']
+        # edge3d_preds = preds['edge_occlusion']
+        # edge2d_preds = preds['edge_texture']
+        # depth_preds = preds['depth_zbuffer']
+        # keypoints3d_preds = preds['keypoints3d']
+
         loss_semantic = criterion(semantic_preds, semantic_gt)
+        # loss_edge3d = masked_l1_loss(edge3d_preds, edge_occlusion_gt, mask_valid_edge3d)
+        # loss_edge2d = masked_l1_loss(edge2d_preds, edge_texture_gt, mask_valid_edge2d)
+        # loss_keypoints3d = masked_l1_loss(keypoints3d_preds, keypoints3d_gt, mask_valid_keypoints3d)
+        # loss_depth = masked_l1_loss(depth_preds, depth_gt, mask_valid_depth)
+
 
         losses = {
-            'semantic':loss_semantic, 
-            'normal_initial':loss_normal_initial, 
-            'edge3d_initial':loss_edge_initial, 
-            'semantic_initial':loss_semantic_initial}
+            'semantic':loss_semantic} 
+            # 'edge3d':loss_edge3d, 
+            # 'edge2d':loss_edge2d, 
+            # 'keypoints3d':loss_keypoints3d, 
+            # 'depth':loss_depth}
+
         total_loss = sum([losses[loss_name] * loss_weights[loss_name] for loss_name in losses.keys()])
 
 
@@ -457,21 +493,20 @@ class MuliTask(pl.LightningModule):
                         losses[f'{dataset}_{loss_name}'] += output[loss_name]
                         losses[loss_name] += output[loss_name]
 
-        losses['loss'] = losses['semantic_loss'] + losses['normal_loss'] + losses['edge3d_loss']
+        # losses['loss'] = losses['semantic_loss'] + losses['depth_loss'] + losses['edge3d_loss'] + losses['keypoints3d_loss']
         for loss_name in losses:
             if loss_name.split('_')[0] in self.val_datasets:
                 losses[loss_name] /= counts[loss_name.split('_')[0]]
             else:
                 losses[loss_name] /= counts['all']
 
-            if loss_name.__contains__('semantic') and not loss_name.__contains__('initial'):
-                self.log(f'val_{loss_name}', losses[loss_name], prog_bar=False, logger=True, sync_dist=self.gpus>1)
+            self.log(f'val_{loss_name}', losses[loss_name], prog_bar=False, logger=True, sync_dist=self.gpus>1)
 
         # Log validation set and OOD debug images using W&B
-        if self.global_step >= self.log_val_imgs_step + 15000 or self.global_step < 2000:
+        if self.global_step >= self.log_val_imgs_step + 10000 or self.global_step <= 2000:
             self.log_val_imgs_step = self.global_step
             self.log_validation_example_images(num_images=10)
-            self.log_ood_example_images(num_images=10)
+            # self.log_ood_example_images(num_images=10)
 
     def select_val_samples_for_datasets(self):
         frls = 0
@@ -479,19 +514,19 @@ class MuliTask(pl.LightningModule):
         # with open('/scratch/ainaz/omnidata2/val_samples/hypersim_val_indices.pkl', 'rb') as f:
         #     val_imgs['hypersim'] = pickle.load(f)
 
-        while len(val_imgs['hypersim']) < 40:
+        while len(val_imgs['hypersim']) < 10:
             idx = random.randint(0, len(self.valset_hypersim) - 1)
             val_imgs['hypersim'].append(idx)
 
-        while len(val_imgs['replica']) < 25:
+        while len(val_imgs['replica']) < 10:
             idx = random.randint(0, len(self.valset_replica) - 1)
             example = self.valset_replica[idx]
             building = example['positive']['building']
-            if building.startswith('frl') and frls > 12:
+            if building.startswith('frl') and frls > 7:
                 continue
             if building.startswith('frl'): frls += 1
             val_imgs['replica'].append(idx)
-        while len(val_imgs['taskonomy']) < 20:
+        while len(val_imgs['taskonomy']) < 10:
             idx = random.randint(0, len(self.valset_taskonomy) - 1)
             val_imgs['taskonomy'].append(idx)
 
@@ -510,12 +545,21 @@ class MuliTask(pl.LightningModule):
                 semantic = example['positive']['segment_semantic']
                 # normal_gt = example['positive']['normal']
                 # depth_gt = example['positive']['depth_zbuffer']
+                # edge3d_gt = example['positive']['edge_occlusion']
+                # edge2d_gt = example['positive']['edge_texture']
+                # keypoints3d_gt = example['positive']['keypoints3d']
+
                 mask_valid = self.make_valid_mask(example['positive']['mask_valid'])
                 mask_valid_semantic = mask_valid.squeeze()
                 # mask_valid_normal = mask_valid.squeeze(0).repeat_interleave(3,0)
                 # mask_valid_depth = mask_valid.squeeze(0)
+                # mask_valid_edge3d = mask_valid.squeeze(0)
+                # mask_valid_keypoints3d = mask_valid.squeeze(0)
+
                 # normal_gt[~mask_valid_normal] = 0
                 # depth_gt[~mask_valid_depth] = 0
+                # edge3d_gt[~mask_valid_edge3d] = 0
+                # keypoints3d_gt[~mask_valid_keypoints3d] = 0
 
                 if dataset == 'gso': semantic_gt = 2**8 * semantic[:,:,0] + semantic[:,:,1]
                 else: semantic_gt = semantic[:,:,0]
@@ -534,6 +578,9 @@ class MuliTask(pl.LightningModule):
                     # normal_pred = preds['normal'].squeeze(0)
                     # normal_pred = torch.clamp(normal_pred, 0, 1)
                     # depth_pred = preds['depth_zbuffer'].squeeze(0)
+                    # edge3d_pred = preds['edge_occlusion'].squeeze(0)
+                    # edge2d_pred = preds['edge_texture']
+                    # keypoints3d_pred = preds['keypoints3d'].squeeze(0)
                     CLASS_COLORS = COMBINED_CLASS_COLORS
 
                 # semantic
@@ -580,6 +627,22 @@ class MuliTask(pl.LightningModule):
                 # depth_pred = depth_pred.permute(1, 2, 0).detach().cpu().numpy()
                 # depth_pred = wandb.Image(depth_pred, caption=f'Pred-Depth I{img_idx}')
                 # all_imgs[f'pred-depth-{dataset}'].append(depth_pred)
+
+                 # edge3d
+                # edge3d_gt = edge3d_gt.permute(1, 2, 0).detach().cpu().numpy()
+                # edge3d_gt = wandb.Image(edge3d_gt, caption=f'GT-Edge3D I{img_idx}')
+                # all_imgs[f'gt-edge3d-{dataset}'].append(edge3d_gt)
+                # edge3d_pred = edge3d_pred.permute(1, 2, 0).detach().cpu().numpy()
+                # edge3d_pred = wandb.Image(edge3d_pred, caption=f'Pred-Edge3D I{img_idx}')
+                # all_imgs[f'pred-edge3d-{dataset}'].append(edge3d_pred)
+
+                 # keypoints3d
+                # keypoints3d_gt = keypoints3d_gt.permute(1, 2, 0).detach().cpu().numpy()
+                # keypoints3d_gt = wandb.Image(keypoints3d_gt, caption=f'GT-Keypoints3D I{img_idx}')
+                # all_imgs[f'gt-keypoints3d-{dataset}'].append(keypoints3d_gt)
+                # keypoints3d_pred = keypoints3d_pred.permute(1, 2, 0).detach().cpu().numpy()
+                # keypoints3d_pred = wandb.Image(keypoints3d_pred, caption=f'Pred-Keypoints3D I{img_idx}')
+                # all_imgs[f'pred-keypoints3d-{dataset}'].append(keypoints3d_pred)
 
 
         self.logger.experiment.log(all_imgs, step=self.global_step)
@@ -629,12 +692,12 @@ class MuliTask(pl.LightningModule):
 
     
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-4)
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-4, weight_decay=1e-4)
         # optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
         # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self.lr_step, gamma=0.5)
-        lmbda = lambda epoch: (1 - (epoch/50)) ** 0.9 
-        scheduler = torch.optim.lr_scheduler.MultiplicativeLR(optimizer, lr_lambda=lmbda)
-        return [optimizer], [scheduler]
+        # lmbda = lambda epoch: (1 - (epoch/50)) ** 0.9 
+        # scheduler = torch.optim.lr_scheduler.MultiplicativeLR(optimizer, lr_lambda=lmbda)
+        return optimizer
     
     
 if __name__ == '__main__':
@@ -649,7 +712,7 @@ if __name__ == '__main__':
         help='Weights & Biases ID to restore and resume training (default: None)')
     parser.add_argument(
         '--save-dir', type=str, default='experiments/multitask',
-        help='Directory in which to save this experiments. (default: exps_semseg/)')   
+        help='Directory in which to save this experiments. (default: experiments/multitask)')   
 
     # Add PyTorch Lightning Module and Trainer args
     parser = MuliTask.add_model_specific_args(parser)
@@ -674,12 +737,12 @@ if __name__ == '__main__':
     # Save weights like ./checkpoints/taskonomy_semseg/W&BID/epoch-X.ckpt
     checkpoint_callback = ModelCheckpoint(
         filepath=os.path.join(checkpoint_dir, '{epoch}'),
-        verbose=True, monitor='val_semantic_loss', mode='min', period=1, save_last=True, save_top_k=20
+        verbose=True, monitor='val_semantic_loss', mode='min', period=1, save_last=True, save_top_k=5
     )
     
     if args.restore is None:
         trainer = pl.Trainer.from_argparse_args(args, logger=wandb_logger, \
-            checkpoint_callback=checkpoint_callback, gpus=[0, 1], auto_lr_find=False, accelerator='ddp', replace_sampler_ddp=False, gradient_clip_val=10)
+            checkpoint_callback=checkpoint_callback, gpus=[3], auto_lr_find=False, gradient_clip_val=10)
     else:
         trainer = pl.Trainer(
             resume_from_checkpoint=os.path.join(f'{args.save_dir}/checkpoints/{wandb_logger.name}/{args.restore}/last.ckpt'), 

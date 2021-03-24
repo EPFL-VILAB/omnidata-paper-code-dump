@@ -25,7 +25,7 @@ from .splits import taskonomy_flat_split_to_buildings, replica_flat_split_to_bui
 from .transforms import default_loader, get_transform, LocalContrastNormalization
 from .task_configs import task_parameters, SINGLE_IMAGE_TASKS
 from .segment_instance import HYPERSIM_LABEL_TRANSFORM, REPLICA_LABEL_TRANSFORM, COMBINED_CLASS_LABELS
-
+from .refocus_augmentation import RefocusImageAugmentation
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True # TODO Test this
 
@@ -39,7 +39,9 @@ REPLICA_BUILDINGS = [
     'office_1', 'frl_apartment_3', 'office_0', 'apartment_2', 'room_0', 'apartment_1', 
     'frl_apartment_1', 'office_3', 'frl_apartment_2', 'apartment_0', 'hotel_0', 'room_1']
 
-N_OUTPUTS = {'segment_semantic': len(COMBINED_CLASS_LABELS)-1, 'depth_zbuffer':1, 'normal':3, 'edge_occlusion':1}
+N_OUTPUTS = {
+    'segment_semantic': len(COMBINED_CLASS_LABELS)-1, 'depth_zbuffer':1, 
+    'normal':3, 'edge_occlusion':1, 'edge_texture':1, 'keypoints3d':1, 'principal_curvature':3}
 
                     
 class TaskonomyReplicaGsoDataset(data.Dataset):
@@ -96,23 +98,31 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
         self.size = 0
 
         for dataset in self.datasets:
-            all_tasks = ['rgb', 'normal', 'segment_semantic', 'keypoints2d', 'keypoints3d', 'depth_zbuffer', 'edge_texture', 'edge_occlusion', 'mask_valid']
+            # all_tasks = ['rgb', 'normal', 'segment_semantic', 'keypoints2d', 'keypoints3d', 'depth_zbuffer', 'edge_texture', 'edge_occlusion', 'mask_valid']
+            # all_tasks = ['rgb', 'normal', 'segment_semantic', 'keypoints3d', 'depth_zbuffer', 'edge_texture', 'edge_occlusion', 'mask_valid']          
+            all_tasks = ['rgb', 'normal', 'depth_euclidean', 'mask_valid']
+            # all_tasks = ['rgb', 'normal', 'mask_valid']
+            # all_tasks = ['rgb', 'principal_curvature', 'mask_valid']     
+
+            
             if dataset == 'taskonomy':
                 tmp_path = './tmp/{}_{}_{}.pkl'.format(
                     dataset,
-                    '-'.join(all_tasks), 
+                    '-'.join(options.tasks), 
                     f'{options.taskonomy_variant}-{options.split}'
                 )
             else:
                 tmp_path = './tmp/{}_{}_{}.pkl'.format(
                     dataset,
-                    '-'.join(all_tasks), 
+                    '-'.join(options.tasks), 
                     options.split
                 )
 
             tmp_exists = os.path.exists(tmp_path)
+            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!! ", tmp_path)
 
             if tmp_exists and not self.force_refresh_tmp:
+                print("!! here")
                 with open(tmp_path, 'rb') as f:
                     dataset_urls = pickle.load(f)
                     for task, urls in dataset_urls.items():
@@ -202,6 +212,14 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                 [transforms.Normalize(mean=RGB_MEAN, std=RGB_STD)]
 
             )
+
+        # Blur augmentation
+        # if 'rgb' in self.transform:
+        #     self.transform['rgb'] = transforms.Compose(
+        #         self.transform['rgb'].transforms +
+        #         [transforms.GaussianBlur(9, sigma=(0.1, 2.0))]
+        #     )
+        #     print('Blurred RGB (kernel size = 9)')
 
     
         # Saving some lists and dictionaries for fast lookup
@@ -329,7 +347,6 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                 # additional transform for hypersim dataset because img size is (768, 1024)
                 if path.__contains__('hypersim'):
                     resize_method = Image.BILINEAR if task in ['rgb'] else Image.NEAREST
-                    # resize_method = Image.BILINEAR if task not in ['segment_instance', 'segment_semantic', 'mask_valid'] else Image.NEAREST
                     transform = transforms.Compose([
                         transforms.Resize(self.image_size, resize_method), 
                         transforms.CenterCrop(self.image_size)])
@@ -441,6 +458,7 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
 
 
 def make_taskonomy_dataset(dir, task, folders=None):
+    print("!!!!!!!!!!!! ", folders)
     # TODO remove later
     if task == 'segment_semantic': dir = os.path.join(dir, '..', 'segment_panoptic')
     #  folders are building names. If None, get all the images (from both building folders and dir)
@@ -449,8 +467,9 @@ def make_taskonomy_dataset(dir, task, folders=None):
     if not os.path.isdir(dir):
         assert "bad directory"
 
-    for subfolder in sorted(os.listdir(dir)):
+    for subfolder in folders:
         subfolder_path = os.path.join(dir, subfolder)
+        print(subfolder_path)
         if os.path.isdir(subfolder_path) and (folders is None or subfolder in folders):
             for fname in sorted(os.listdir(subfolder_path)):
                 path = os.path.join(subfolder_path, fname)

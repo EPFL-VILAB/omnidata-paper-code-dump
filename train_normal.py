@@ -6,7 +6,8 @@ import pickle
 from collections import defaultdict
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data.sampler import WeightedRandomSampler
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import WandbLogger
@@ -21,8 +22,9 @@ from matplotlib import cm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from data.taskonomy_replica_gso_dataset import TaskonomyReplicaGsoDataset, REPLICA_BUILDINGS
+from data.refocus_augmentation import RefocusImageAugmentation
 from models.unet import UNet
-from models.seg_hrnet import get_configured_hrnet
+# from models.seg_hrnet import get_configured_hrnet
 from models.multi_task_model import MultiTaskModel
 from losses import masked_l1_loss, compute_grad_norm_losses
 
@@ -88,12 +90,16 @@ class ConsistentNormal(pl.LightningModule):
         self.use_hypersim = use_hypersim
         self.save_debug_info_on_error = False
 
+        self.normalize_rgb = False
         self.setup_datasets()
-        
         self.val_samples = self.select_val_samples_for_datasets()
+        self.log_val_imgs_step = 0
 
-        # self.model = UNet(in_channels=3, out_channels=3)
-        self.model = MultiTaskModel(tasks=['normal'], backbone='hrnet_w48', head='hrnet', pretrained=True, dilated=False)
+        # self.refocus_aug = RefocusImageAugmentation(8, 0.01, 3.0, return_segments=False)
+
+        self.model = UNet(in_channels=3, out_channels=3)
+        # self.model = MultiTaskModel(tasks=['normal'], n_channels=3,\
+        #     backbone='hrnet_w18', head='hrnet', pretrained=True, dilated=False)
 
         if self.pretrained_weights_path is not None:
             checkpoint = torch.load(self.pretrained_weights_path)
@@ -131,7 +137,7 @@ class ConsistentNormal(pl.LightningModule):
             '--num_workers', type=int, default=16,
             help='Number of workers for DataLoader. (default: 16)')
         parser.add_argument(
-            '--taskonomy_variant', type=str, default='tiny',
+            '--taskonomy_variant', type=str, default='medium',
             choices=['full', 'fullplus', 'medium', 'tiny', 'debug'],
             help='One of [full, fullplus, medium, tiny, debug] (default: fullplus)')
         parser.add_argument(
@@ -153,7 +159,7 @@ class ConsistentNormal(pl.LightningModule):
             '--use_replica', action='store_true', default=True,
             help='Set to use replica dataset.')
         parser.add_argument(
-            '--use_gso', action='store_true', default=False,
+            '--use_gso', action='store_true', default=True,
             help='Set to user GSO dataset.')
         parser.add_argument(
             '--use_hypersim', action='store_true', default=True,
@@ -163,7 +169,7 @@ class ConsistentNormal(pl.LightningModule):
     def setup_datasets(self):
         self.num_positive = 1 
 
-        tasks = ['rgb', 'normal', 'segment_semantic', 'depth_zbuffer', 'mask_valid']
+        tasks = ['rgb', 'reshading', 'mask_valid']        
 
         self.train_datasets = []
         if self.use_taskonomy: self.train_datasets.append('taskonomy')
@@ -171,78 +177,201 @@ class ConsistentNormal(pl.LightningModule):
         if self.use_gso: self.train_datasets.append('gso')
         if self.use_hypersim: self.train_datasets.append('hypersim')
 
-        self.val_datasets = ['taskonomy', 'replica', 'hypersim']
+        self.val_datasets = ['taskonomy', 'replica', 'hypersim', 'gso']
         # self.val_datasets = ['hypersim']
 
 
-        opt_train = TaskonomyReplicaGsoDataset.Options(
-            taskonomy_data_path=self.taskonomy_root,
-            replica_data_path=self.replica_root,
-            gso_data_path=self.gso_root,
-            hypersim_data_path=self.hypersim_root,
+        opt_train_taskonomy = TaskonomyReplicaGsoDataset.Options(
             tasks=tasks,
-            datasets=self.train_datasets,
+            datasets=['taskonomy'],
             split='train',
-            taskonomy_variant=self.taskonomy_variant,
+            taskonomy_variant='medium',
             transform='DEFAULT',
             image_size=self.image_size,
-            num_positive=self.num_positive,
-            normalize_rgb=True,
+            normalize_rgb=self.normalize_rgb,
             randomize_views=True
         )
-        self.trainset = TaskonomyReplicaGsoDataset(options=opt_train)
+        
+        self.trainset_taskonomy = TaskonomyReplicaGsoDataset(options=opt_train_taskonomy)
 
-        opt_val = TaskonomyReplicaGsoDataset.Options(
-            taskonomy_data_path=self.taskonomy_root,
-            replica_data_path=self.replica_root,
-            gso_data_path=self.gso_root,
-            hypersim_data_path=self.hypersim_root,
+        # opt_train_replica = TaskonomyReplicaGsoDataset.Options(
+        #     tasks=tasks,
+        #     datasets=['replica'],
+        #     split='train',
+        #     taskonomy_variant=self.taskonomy_variant,
+        #     transform='DEFAULT',
+        #     image_size=self.image_size,
+        #     normalize_rgb=self.normalize_rgb,
+        #     randomize_views=True
+        # )
+        
+        # self.trainset_replica = TaskonomyReplicaGsoDataset(options=opt_train_replica)
+
+        # opt_train_hypersim = TaskonomyReplicaGsoDataset.Options(
+        #     tasks=tasks,
+        #     datasets=['hypersim'],
+        #     split='train',
+        #     taskonomy_variant=self.taskonomy_variant,
+        #     transform='DEFAULT',
+        #     image_size=self.image_size,
+        #     normalize_rgb=self.normalize_rgb,
+        #     randomize_views=True
+        # )
+        
+        # self.trainset_hypersim = TaskonomyReplicaGsoDataset(options=opt_train_hypersim)
+
+        # opt_train_gso = TaskonomyReplicaGsoDataset.Options(
+        #     tasks=tasks,
+        #     datasets=['gso'],
+        #     split='train',
+        #     taskonomy_variant=self.taskonomy_variant,
+        #     transform='DEFAULT',
+        #     image_size=self.image_size,
+        #     normalize_rgb=self.normalize_rgb,
+        #     randomize_views=True
+        # )
+        
+        # self.trainset_gso = TaskonomyReplicaGsoDataset(options=opt_train_gso)
+
+
+        opt_val_taskonomy = TaskonomyReplicaGsoDataset.Options(
+            split='val',
+            taskonomy_variant='tiny',
+            tasks=tasks,
+            datasets=['taskonomy'],
+            transform='DEFAULT',
+            image_size=self.image_size,
+            normalize_rgb=self.normalize_rgb,
+            randomize_views=False
+        )
+
+        self.valset_taskonomy = TaskonomyReplicaGsoDataset(options=opt_val_taskonomy)
+        self.valset_taskonomy.randomize_order(seed=99)
+
+        opt_val_replica = TaskonomyReplicaGsoDataset.Options(
             split='val',
             taskonomy_variant=self.taskonomy_variant,
             tasks=tasks,
-            datasets=self.val_datasets,
+            datasets=['replica'],
             transform='DEFAULT',
             image_size=self.image_size,
-            num_positive=self.num_positive,
-            normalize_rgb=True,
+            normalize_rgb=self.normalize_rgb,
             randomize_views=False
         )
-        self.valset = TaskonomyReplicaGsoDataset(options=opt_val)
 
-        # Shuffle, so that truncated validation sets are randomly sampled, but the same throughout training
-        self.valset.randomize_order(seed=99)
+        self.valset_replica = TaskonomyReplicaGsoDataset(options=opt_val_replica)
+        self.valset_replica.randomize_order(seed=99)
+
+        opt_val_hypersim = TaskonomyReplicaGsoDataset.Options(
+            split='val',
+            taskonomy_variant=self.taskonomy_variant,
+            tasks=tasks,
+            datasets=['hypersim'],
+            transform='DEFAULT',
+            image_size=self.image_size,
+            normalize_rgb=self.normalize_rgb,
+            randomize_views=False
+        )
+
+        self.valset_hypersim = TaskonomyReplicaGsoDataset(options=opt_val_hypersim)
+        self.valset_hypersim.randomize_order(seed=99)
+
+        opt_val_gso = TaskonomyReplicaGsoDataset.Options(
+            split='val',
+            taskonomy_variant=self.taskonomy_variant,
+            tasks=tasks,
+            datasets=['gso'],
+            transform='DEFAULT',
+            image_size=self.image_size,
+            normalize_rgb=self.normalize_rgb,
+            randomize_views=False
+        )
+
+        self.valset_gso = TaskonomyReplicaGsoDataset(options=opt_val_gso)
+        self.valset_gso.randomize_order(seed=99)
 
         print('Loaded training and validation sets:')
-        print(f'Train set contains {len(self.trainset)} samples.')
-        print(f'Validation set contains {len(self.valset)} samples.')
+        print(f'Train set (taskonomy) contains {len(self.trainset_taskonomy)} samples.')
+        # print(f'Train set (replica) contains {len(self.trainset_replica)} samples.')
+        # print(f'Train set (hypersim) contains {len(self.trainset_hypersim)} samples.')
+        # print(f'Train set (gso) contains {len(self.trainset_gso)} samples.')
+
+        print(f'Validation set (taskonomy) contains {len(self.valset_taskonomy)} samples.')
+        print(f'Validation set (replica) contains {len(self.valset_replica)} samples.')
+        print(f'Validation set (hypersim) contains {len(self.valset_hypersim)} samples.')
+        print(f'Validation set (gso) contains {len(self.valset_gso)} samples.')
+
 
     def train_dataloader(self):
         return DataLoader(
-            self.trainset, batch_size=self.batch_size, shuffle=True,
+            self.trainset_taskonomy, batch_size=self.batch_size, shuffle=True,
             num_workers=self.num_workers, pin_memory=False,
         )
 
+    # def val_dataloader(self):
+    #     return DataLoader(
+    #         self.valset, batch_size=self.batch_size, shuffle=False,
+    #         num_workers=self.num_workers, pin_memory=False
+    #     )
+
+
+    # def train_dataloader(self):
+    #     taskonomy_count = len(self.trainset_taskonomy)
+    #     replica_count = len(self.trainset_replica)
+    #     hypersim_count = len(self.trainset_hypersim)
+    #     gso_count = len(self.trainset_gso)
+
+    #     dataset_sample_count = torch.tensor([taskonomy_count, replica_count, hypersim_count, gso_count])
+        
+    #     weight = 1. / dataset_sample_count.float()
+    #     print("!!!!!!!!!!! ", weight, dataset_sample_count)
+    #     samples_weight = torch.tensor([weight[0]] * taskonomy_count + [weight[1]] * replica_count + [weight[2]] * hypersim_count + [weight[3]] * gso_count)
+    #     sampler = WeightedRandomSampler(samples_weight, len(samples_weight))
+    #     trainset = ConcatDataset([self.trainset_taskonomy, self.trainset_replica, self.trainset_hypersim, self.trainset_gso])
+    #     return DataLoader(
+    #         trainset, batch_size=self.batch_size, sampler=sampler, 
+    #         num_workers=self.num_workers, pin_memory=False
+    #     )
+        
     def val_dataloader(self):
-        return DataLoader(
-            self.valset, batch_size=self.batch_size, shuffle=False,
+        taskonomy_dl = DataLoader(
+            self.valset_taskonomy, batch_size=self.batch_size, shuffle=False, 
             num_workers=self.num_workers, pin_memory=False
         )
+        replica_dl = DataLoader(
+            self.valset_replica, batch_size=self.batch_size, shuffle=False, 
+            num_workers=self.num_workers, pin_memory=False
+        )
+        hypersim_dl = DataLoader(
+            self.valset_hypersim, batch_size=self.batch_size, shuffle=False, 
+            num_workers=self.num_workers, pin_memory=False
+        )
+        gso_dl = DataLoader(
+            self.valset_gso, batch_size=self.batch_size, shuffle=False, 
+            num_workers=self.num_workers, pin_memory=False
+        )
+        return [taskonomy_dl, replica_dl, hypersim_dl, gso_dl]
 
     def forward(self, x):
-        return self.model(x)['normal']
+        return self.model(x) #['normal']
 
     def training_step(self, batch, batch_idx):
         res = self.shared_step(batch, train=True)
         # Logging
-        self.log('train_normal_loss', res['loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1)
-        return {'loss': res['loss']}
+        self.log('train_normal_loss', res['normal_loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1)
+        return {'loss': res['normal_loss']}
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step_combined(self, batch, batch_idx):
         res = self.shared_step(batch, train=False)
         # Logging
         self.log('val_normal_loss', res['loss'], prog_bar=True, logger=True, sync_dist=self.gpus>1)
         return {'loss': res['loss']}
     
+    def validation_step(self, batch, batch_idx, dataset_idx):
+        res = self.shared_step(batch, train=False)
+        dataset = self.val_datasets[dataset_idx]
+        res['dataset'] = dataset
+        return res
     
     def register_save_on_error_callback(self, callback):
         '''
@@ -291,57 +420,86 @@ class ConsistentNormal(pl.LightningModule):
         rgb = batch['positive']['rgb']
         normal_gt = batch['positive']['normal']
 
+        # refocus augmentation
+        # depth = batch['positive']['depth_euclidean']
+        # if depth[depth < 1.0].shape[0] != 0:
+        #     depth[depth >= 1.0] = depth[depth < 1.0].max()
+        # else:
+        #     depth[depth >= 1.0] = 0.99
+        #     print("**")
+        # composited_rgb = self.refocus_aug(rgb, depth)
+
         # Forward pass
         normal_preds = self(rgb)
         # clamp the output
-        # normal_preds = torch.clamp(normal_preds, 0, 1)
+        normal_preds = torch.clamp(normal_preds, 0, 1)
 
         # Mask out invalid pixels and compute loss
         mask_valid = self.make_valid_mask(batch['positive']['mask_valid']).repeat_interleave(3,1)
         loss = masked_l1_loss(normal_preds, normal_gt, mask_valid)
         
         step_results.update({
-            'loss': loss
+            'normal_loss': loss
         })
         return step_results
 
-    def validation_epoch_end(self, outputs):
-        if trainer.global_rank > 0:
-             return 
-        # Log validation set and OOD debug images using W&B
-        self.log_validation_example_images(num_images=30)
-        self.log_ood_example_images(num_images=10)
 
+    def validation_epoch_end(self, outputs):
+        counts = {'taskonomy':0, 'replica':0, 'hypersim':0, 'gso':0, 'all':0}
+        losses = {}
+        losses = defaultdict(lambda: 0, losses)
+        for dataloader_outputs in outputs:
+            for output in dataloader_outputs:
+                dataset = output['dataset']
+                counts[dataset] += 1
+                counts['all'] += 1
+                for loss_name in output:
+                    if loss_name.__contains__('_loss'):
+                        losses[f'{dataset}_{loss_name}'] += output[loss_name]
+                        losses[loss_name] += output[loss_name]
+
+        for loss_name in losses:
+            if loss_name.split('_')[0] in self.val_datasets:
+                losses[loss_name] /= counts[loss_name.split('_')[0]]
+            else:
+                losses[loss_name] /= counts['all']
+
+            self.log(f'val_{loss_name}', losses[loss_name], prog_bar=False, logger=True, sync_dist=self.gpus>1)
+
+        # Log validation set and OOD debug images using W&B
+        if self.global_step >= self.log_val_imgs_step + 14999 or self.global_step <= 3000:
+            self.log_val_imgs_step = self.global_step
+            self.log_validation_example_images(num_images=10)
+            self.log_ood_example_images(num_images=10)
 
     def select_val_samples_for_datasets(self):
         frls = 0
         val_imgs = defaultdict(list)
+        # with open('/scratch/ainaz/omnidata2/val_samples/hypersim_val_indices.pkl', 'rb') as f:
+        #     val_imgs['hypersim'] = pickle.load(f)
 
-        with open('/scratch/ainaz/omnidata2/val_samples/hypersim_val_indices_combined.pkl', 'rb') as f:
-            val_imgs['hypersim'] = pickle.load(f)
+        while len(val_imgs['hypersim']) < 30:
+            idx = random.randint(0, len(self.valset_hypersim) - 1)
+            val_imgs['hypersim'].append(idx)
 
-        if self.val_datasets == ['hypersim']: return val_imgs
-
-        while len(val_imgs['replica']) + len(val_imgs['taskonomy']) < 60:
-
-            idx = random.randint(0, len(self.valset) - 1)
-            example = self.valset[idx]
+        while len(val_imgs['replica']) < 25:
+            idx = random.randint(0, len(self.valset_replica) - 1)
+            example = self.valset_replica[idx]
             building = example['positive']['building']
-            print(len(val_imgs['replica']), len(val_imgs['taskonomy']), len(val_imgs['hypersim']), len(val_imgs['gso']), building)
-            
-            # if building_in_hypersim(building) and len(val_imgs['hypersim']) < 50:
-            #     val_imgs['hypersim'].append(idx)
+            if building.startswith('frl') and frls > 18:
+                continue
+            if building.startswith('frl'): frls += 1
+            val_imgs['replica'].append(idx)
+        while len(val_imgs['taskonomy']) < 30:
+            idx = random.randint(0, len(self.valset_taskonomy) - 1)
+            val_imgs['taskonomy'].append(idx)
 
-            if building_in_replica(building) and len(val_imgs['replica']) < 30:
-                if building.startswith('frl') and frls > 15:
-                    continue
-                if building.startswith('frl'): frls += 1
-                val_imgs['replica'].append(idx)
-
-            elif building_in_taskonomy(building) and len(val_imgs['taskonomy']) < 30:
-                val_imgs['taskonomy'].append(idx)
+        while len(val_imgs['gso']) < 30:
+            idx = random.randint(0, len(self.valset_gso) - 1)
+            val_imgs['gso'].append(idx)
 
         return val_imgs
+    
 
     def log_validation_example_images(self, num_images=20):
         self.model.eval()
@@ -349,7 +507,11 @@ class ConsistentNormal(pl.LightningModule):
 
         for dataset in self.val_datasets:
             for img_idx in self.val_samples[dataset]:
-                example = self.valset[img_idx]
+                if dataset == 'taskonomy': example = self.valset_taskonomy[img_idx]
+                elif dataset == 'replica': example = self.valset_replica[img_idx]
+                elif dataset == 'hypersim': example = self.valset_hypersim[img_idx]
+                elif dataset == 'gso': example = self.valset_gso[img_idx]
+
                 num_positive = self.num_positive
                 rgb_pos = example['positive']['rgb'].to(self.device)
                 normal_gt_pos = example['positive']['normal']
@@ -361,8 +523,18 @@ class ConsistentNormal(pl.LightningModule):
                 rgb_pos = rgb_pos.unsqueeze(axis=0)
                 normal_gt_pos = normal_gt_pos.unsqueeze(axis=0)
 
+                # refocus augmentation
+                # depth = example['positive']['depth_euclidean'].to(self.device)
+
+                # if depth[depth < 1.0].shape[0] != 0:
+                #     depth[depth >= 1.0] = depth[depth < 1.0].max()
+                # else:
+                #     depth[depth >= 1.0] = 0.99
+                #     print("!!")
+                # rgb_pos = self.refocus_aug(rgb_pos, depth)
+
                 with torch.no_grad():
-                    normal_preds_pos = self.model.forward(rgb_pos)['normal']
+                    normal_preds_pos = self.model.forward(rgb_pos) #['normal']
                     normal_preds_pos = torch.clamp(normal_preds_pos, 0, 1)
 
                 for pos_idx in range(num_positive):
@@ -383,28 +555,29 @@ class ConsistentNormal(pl.LightningModule):
     def log_ood_example_images(self, data_dir='/datasets/evaluation_ood/real_world/images', num_images=15):
         self.model.eval()
 
-        all_imgs = {'rgb_ood': [], 'pred_ood': []}
+        all_imgs = defaultdict(list)
 
         for img_idx in range(num_images):
             rgb = Image.open(f'{data_dir}/{img_idx:05d}.png').convert('RGB')
-            rgb = self.valset.transform['rgb'](rgb).to(self.device)
+            rgb = self.valset_taskonomy.transform['rgb'](rgb).to(self.device)
 
             with torch.no_grad():
-                normal_pred = self.model.forward(rgb.unsqueeze(0))['normal'][0]
+                normal_pred = self.model.forward(rgb.unsqueeze(0))[0] #['normal'][0]
+                normal_pred = torch.clamp(normal_pred, 0, 1)
 
             rgb = rgb.permute(1, 2, 0).detach().cpu().numpy()
             rgb = wandb.Image(rgb, caption=f'RGB OOD {img_idx}')
             all_imgs['rgb_ood'].append(rgb)
 
-            normal_pred = wandb.Image(normal_pred, caption=f'Pred OOD {img_idx}')
-            all_imgs['pred_ood'].append(normal_pred)
+            normal_pred = wandb.Image(normal_pred, caption=f'Pred-Normal OOD {img_idx}')
+            all_imgs['pred-normal-ood'].append(normal_pred)
 
         self.logger.experiment.log(all_imgs, step=self.global_step)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-3, weight_decay=2e-6, amsgrad=True)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=40)
-        return [optimizer], [scheduler]
+        # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=40)
+        return optimizer
 
 
 def save_model_and_batch_on_error(checkpoint_function, save_path_prefix='.'):
@@ -442,9 +615,6 @@ if __name__ == '__main__':
 
     model = ConsistentNormal(**vars(args))
 
-    # model = ConsistentNormal.load_from_checkpoint(
-    # checkpoint_path=args.pretrained_weights_path, **vars(args))
-
     if args.experiment_name is None:
         args.experiment_name = 'taskonomy_normal_baseline'
 
@@ -466,8 +636,8 @@ if __name__ == '__main__':
 
     if args.restore is None:
         trainer = Trainer.from_argparse_args(args, logger=wandb_logger, \
-            checkpoint_callback=checkpoint_callback, gpus=[0,1], auto_lr_find=False, \
-                accelerator='ddp')
+            checkpoint_callback=checkpoint_callback, gpus=[3], auto_lr_find=False, gradient_clip_val=10)
+                # accelerator='ddp', replace_sampler_ddp=False, 
     else:
         trainer = Trainer(
             resume_from_checkpoint=os.path.join(

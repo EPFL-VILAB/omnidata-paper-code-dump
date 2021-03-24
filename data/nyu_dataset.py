@@ -1,6 +1,7 @@
 import torch
 
 import numpy as np
+import torchvision
 import torchvision.transforms as transforms
 import torch.nn.functional as F
 import functools
@@ -204,22 +205,37 @@ class NYUDataset(MyDataloader):
 
     def train_transform(self, rgb, depth):
         s = np.random.uniform(1.0, 1.5)  # random scaling
+        scaled_size = int(s * iheight)
         depth_np = depth / s
         angle = np.random.uniform(-5.0, 5.0)  # random rotation degrees
         do_flip = np.random.uniform(0.0, 1.0) < 0.5  # random horizontal flip
 
         # perform 1st step of data augmentation
         transform = transforms.Compose([
-            transforms.Resize(288.0 / iheight),  # this is for computational efficiency, since rotation can be slow
-            transforms.Rotate(angle),
-            transforms.Resize(s),
+            # transforms.Resize(288.0 // iheight),  # this is for computational efficiency, since rotation can be slow
+            transforms.ToPILImage(),
+            transforms.RandomRotation(degrees=(-5.0, 5.0)),
+            transforms.Resize(scaled_size),
             transforms.CenterCrop(self.output_size),
-            transforms.HorizontalFlip(do_flip)
+            transforms.RandomHorizontalFlip(p=0.5)
         ])
         rgb_np = transform(rgb)
         rgb_np = self.color_jitter(rgb_np)  # random color jittering
         rgb_np = np.asfarray(rgb_np, dtype='float') / 255
-        depth_np = transform(depth_np)
+        rgb_np = transforms.ToTensor()(rgb_np).float()
+
+        normal_np = transforms.ToTensor()(depth_np).squeeze().float()
+        normal_np = transform(normal_np)
+        mask = build_mask(transforms.ToTensor()(normal_np), mask_val[self.task], tol=0.01)[0]
+        z = transforms.ToTensor()(normal_np).clone()
+        # for x1, x2 in [(1, 2)]:
+        #     z[x1], z[x2] = z[x2].clone(), z[x1].clone()
+        # for k in [1]:
+        #     z[k] = 1 - z[k]
+        depth_np = z
+        depth_np[~mask] = mask_val[self.task]
+
+        # depth_np = transform(depth_np.float())
 
         return rgb_np, depth_np
 

@@ -9,7 +9,7 @@ from runstats import Statistics
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import WandbLogger
@@ -28,8 +28,10 @@ from data.nyu_dataset import NYUDataset, build_mask_for_eval, mask_val
 from data.OASIS_dataset import OASISDataset
 from models.unet import UNet
 from models.multi_task_model import MultiTaskModel
+from models.nips_surface_network import NIPSSurfaceNetwork
 from losses import masked_l1_loss, compute_grad_norm_losses
 from evaluation_metrics import get_metrics
+from data.refocus_augmentation import RefocusImageAugmentation
 
 
 class NormalTest(pl.LightningModule):
@@ -61,7 +63,14 @@ class NormalTest(pl.LightningModule):
             'use_taskonomy', 'use_replica', 'use_gso', 'use_hypersim',
             'pretrained_weights_path', 'experiment_name', 'restore', 'gpus', 'distributed_backend', 'precision'
         )
-        self.pretrained_weights_path = pretrained_weights_path
+        # self.pretrained_weights_path = pretrained_weights_path
+        # no aug
+        self.pretrained_weights_path1 = \
+            '/scratch/ainaz/omnidata2/experiments/normal/checkpoints/omnidata/164bexct/epoch=9.ckpt'
+        # aug
+        self.pretrained_weights_path2 = \
+            '/scratch/ainaz/omnidata2/experiments/normal/checkpoints/omnidata/49j20rhe/epoch=9.ckpt'
+
         self.image_size = image_size
         self.batch_size = batch_size
         self.gpus = kwargs['gpus']
@@ -81,17 +90,30 @@ class NormalTest(pl.LightningModule):
         self.use_hypersim = use_hypersim
         self.use_nyu = use_nyu
         self.use_oasis = use_oasis
-        self.model_name = model_name
+        # self.model_name = model_name
+        self.model_name1 = 'full_combined'
+        self.model_name2 = 'full_combined_aug'
+
         self.save_debug_info_on_error = False
-
+        self.normalize_rgb = False
         self.setup_datasets()
+        self.metrics1 = defaultdict(Statistics)
+        self.metrics2 = defaultdict(Statistics)
+        self.refocus_aug = RefocusImageAugmentation(10, 0.001, 5.0, return_segments=False)
 
-        # self.model = UNet(in_channels=3, out_channels=3)
-        self.model = MultiTaskModel(tasks=['normal'], n_channels=3, backbone='hrnet_w48', 
-        head='hrnet', pretrained=False, dilated=False)
+        transform_blind = transforms.Compose([
+            transforms.Resize(self.image_size, Image.NEAREST),
+            transforms.ToTensor()
+        ])
+        # self.blind = transform_blind(
+        #     Image.open('/scratch/ainaz/omnidata2/blind_guesses/normal_taskonomy.png'))
 
-        if self.pretrained_weights_path is not None:
-            checkpoint = torch.load(self.pretrained_weights_path, map_location='cuda:0')
+
+
+        #### UNet
+        self.model1 = UNet(in_channels=3, out_channels=3)
+        if self.pretrained_weights_path1 is not None:
+            checkpoint = torch.load(self.pretrained_weights_path1, map_location='cuda:0')
             # In case we load a checkpoint from this LightningModule
             if 'state_dict' in checkpoint:
                 state_dict = {}
@@ -99,9 +121,20 @@ class NormalTest(pl.LightningModule):
                     state_dict[k.replace('model.', '')] = v
             else:
                 state_dict = checkpoint
-            self.model.load_state_dict(state_dict)
+            self.model1.load_state_dict(state_dict)
 
-        self.metrics = defaultdict(Statistics)
+        self.model2 = UNet(in_channels=3, out_channels=3)
+        if self.pretrained_weights_path2 is not None:
+            checkpoint = torch.load(self.pretrained_weights_path2, map_location='cuda:0')
+            # In case we load a checkpoint from this LightningModule
+            if 'state_dict' in checkpoint:
+                state_dict = {}
+                for k, v in checkpoint['state_dict'].items():
+                    state_dict[k.replace('model.', '')] = v
+            else:
+                state_dict = checkpoint
+            self.model2.load_state_dict(state_dict)
+
 
     @staticmethod
     def add_model_specific_args(parent_parser):
@@ -141,7 +174,7 @@ class NormalTest(pl.LightningModule):
             '--oasis_root', type=str, default='/scratch/ainaz/OASIS/OASIS_trainval/image',
             help='Root directory of OASIS dataset.')
         parser.add_argument(
-            '--use_taskonomy', action='store_true', default=False,
+            '--use_taskonomy', action='store_true', default=True,
             help='Set to use taskonomy dataset.')
         parser.add_argument(
             '--use_replica', action='store_true', default=False,
@@ -156,7 +189,7 @@ class NormalTest(pl.LightningModule):
             '--use_nyu', action='store_true', default=False,
             help='Set to use NYU dataset.')
         parser.add_argument(
-            '--use_oasis', action='store_true', default=True,
+            '--use_oasis', action='store_true', default=False,
             help='Set to use OASIS dataset.')
         parser.add_argument(
             '--model_name', type=str, default='taskonomy-tiny',
@@ -166,7 +199,7 @@ class NormalTest(pl.LightningModule):
     def setup_datasets(self):
         self.num_positive = 1 
 
-        tasks = ['rgb', 'normal', 'mask_valid']
+        tasks = ['rgb', 'normal', 'depth_euclidean', 'mask_valid']
         self.test_datasets = []
         if self.use_taskonomy: self.test_datasets.append('taskonomy')
         if self.use_replica: self.test_datasets.append('replica')
@@ -181,33 +214,70 @@ class NormalTest(pl.LightningModule):
             self.testset = self.nyu_dataloader.imgs
 
         elif self.use_oasis:
-            self.oasis_dataloader = OASISDataset(root=self.oasis_root, output_size=self.image_size, normalized=True)
+            self.oasis_dataloader = OASISDataset(root=self.oasis_root, output_size=self.image_size, normalized=False)
             self.testset = self.oasis_dataloader.imgs
 
         else:
-            opt_test = TaskonomyReplicaGsoDataset.Options(
-                taskonomy_data_path=self.taskonomy_root,
-                replica_data_path=self.replica_root,
-                gso_data_path=self.gso_root,
-                hypersim_data_path=self.hypersim_root,
+
+            opt_test_taskonomy = TaskonomyReplicaGsoDataset.Options(
+            split='test',
+            taskonomy_variant='tiny',
+            tasks=tasks,
+            datasets=['taskonomy'],
+            transform='DEFAULT',
+            image_size=self.image_size,
+            normalize_rgb=self.normalize_rgb,
+            randomize_views=False
+            )
+
+            self.testset_taskonomy = TaskonomyReplicaGsoDataset(options=opt_test_taskonomy)
+
+            opt_test_replica = TaskonomyReplicaGsoDataset.Options(
                 split='test',
                 taskonomy_variant=self.taskonomy_variant,
                 tasks=tasks,
-                datasets=self.test_datasets,
+                datasets=['replica'],
                 transform='DEFAULT',
                 image_size=self.image_size,
-                num_positive=self.num_positive,
-                normalize_rgb=False,
-                load_building_meshes=False,
-                force_refresh_tmp = False,
+                normalize_rgb=self.normalize_rgb,
                 randomize_views=False
             )
-            self.testset = TaskonomyReplicaGsoDataset(options=opt_test)
+
+            self.testset_replica = TaskonomyReplicaGsoDataset(options=opt_test_replica)
+
+            opt_test_hypersim = TaskonomyReplicaGsoDataset.Options(
+                split='test',
+                taskonomy_variant=self.taskonomy_variant,
+                tasks=tasks,
+                datasets=['hypersim'],
+                transform='DEFAULT',
+                image_size=self.image_size,
+                normalize_rgb=self.normalize_rgb,
+                randomize_views=False
+            )
+
+            self.testset_hypersim = TaskonomyReplicaGsoDataset(options=opt_test_hypersim)
+
+            opt_test_gso = TaskonomyReplicaGsoDataset.Options(
+                split='test',
+                taskonomy_variant=self.taskonomy_variant,
+                tasks=tasks,
+                datasets=['gso'],
+                transform='DEFAULT',
+                image_size=self.image_size,
+                normalize_rgb=self.normalize_rgb,
+                randomize_views=False
+            )
+
+            self.testset_gso = TaskonomyReplicaGsoDataset(options=opt_test_gso)
 
         # self.testset.randomize_order(seed=10)
 
         print('Loaded test set:')
-        print(f'Test set contains {len(self.testset)} samples.')
+        print(f'Test set (taskonomy) contains {len(self.testset_taskonomy)} samples.')
+        print(f'Test set (replica) contains {len(self.testset_replica)} samples.')
+        print(f'Test set (hypersim) contains {len(self.testset_hypersim)} samples.')
+        print(f'Test set (gso) contains {len(self.testset_gso)} samples.')
 
 
     def test_dataloader(self):
@@ -220,13 +290,15 @@ class NormalTest(pl.LightningModule):
                 num_workers=self.num_workers, pin_memory=False
             )
         else:
+            testset = ConcatDataset([
+                 self.testset_taskonomy, self.testset_replica, self.testset_hypersim, self.testset_gso])
             return DataLoader(
-                self.testset, batch_size=self.batch_size, shuffle=False,
+                testset, batch_size=self.batch_size, shuffle=False,
                 num_workers=self.num_workers, pin_memory=False
             )
 
     def forward(self, x):
-        return self.model(x)['normal']
+        return self.model1(x) #['normal']
 
 
     def test_step(self, batch, batch_idx):   
@@ -239,44 +311,82 @@ class NormalTest(pl.LightningModule):
 
         elif self.use_oasis:
             rgb, normal_gt, mask_valid = batch
-            mask_valid = mask_valid != 0
+            # mask_valid = mask_valid != 0
+            mask_valid = build_mask_for_eval(target=mask_valid.cpu(), val=0.0)
             normal_preds = self(rgb)
             normal_preds = torch.clamp(normal_preds, 0, 1)
             
         else:     
             rgb = batch['positive']['rgb']
             normal_gt = batch['positive']['normal']
+
+            # refocus augmentation
+            # depth = batch['positive']['depth_euclidean']
+            # if depth[depth < 1.0].shape[0] != 0:
+            #     depth[depth >= 1.0] = depth[depth < 1.0].max()
+            # else:
+            #     depth[depth >= 1.0] = 0.99
+            #     print("**")
+            # rgb = self.refocus_aug(rgb, depth)
+
             # Forward pass
-            normal_preds = self(rgb)
-            normal_preds = torch.clamp(normal_preds, 0, 1)
+            normal_preds1 = self.model1.forward(rgb)
+            normal_preds1 = torch.clamp(normal_preds1, 0, 1)
+            normal_preds2 = self.model2.forward(rgb)
+            normal_preds2 = torch.clamp(normal_preds2, 0, 1)
+
+            #### Blind Guess
+            # normal_preds1 = self.blind.unsqueeze(0).repeat_interleave(self.batch_size, 0).to(normal_gt.device)
+            # normal_preds2 = self.blind.unsqueeze(0).repeat_interleave(self.batch_size, 0).to(normal_gt.device)
+            ##############
+
             normal_gt = torch.clamp(normal_gt, 0, 1)
 
             # Mask out invalid pixels and compute loss
             mask_valid = self.make_valid_mask(batch['positive']['mask_valid']).repeat_interleave(3,1)
 
         # save samples
-        if batch_idx % 4 == 0:
-            pred = np.uint8(255 * normal_preds[0].cpu().permute((1, 2, 0)).numpy())
-            gt = np.uint8(255 * normal_gt[0].cpu().permute((1, 2, 0)).numpy())
+        if batch_idx % 10 == 0:
+            pred1 = np.uint8(255 * normal_preds1[0].cpu().permute((1, 2, 0)).numpy())
+            pred2 = np.uint8(255 * normal_preds2[0].cpu().permute((1, 2, 0)).numpy())
+
+            gt = normal_gt[0].cpu().permute((1, 2, 0)).numpy()
+            gt[(gt[:,:,0]==0) * (gt[:,:,1]==0) * (gt[:,:,2]==0)] = mask_val['normal']
+            gt = np.uint8(255 * gt)
+
             rgb = np.uint8(255 * rgb[0].cpu().permute((1, 2, 0)).numpy())
             mask = np.uint8(255 * mask_valid[0].cpu().permute((1, 2, 0)).numpy())
 
             transform = transforms.Resize(512, Image.NEAREST)
             im = Image.fromarray(rgb)
-            transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_rgb.png'))
+            transform(im).save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_blur_9', f'{batch_idx}_rgb.png'))
             im = Image.fromarray(gt)
-            transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_gt.png'))
-            im = Image.fromarray(pred)
-            transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_{self.model_name}_pred.png'))
-            im = Image.fromarray(mask)
-            transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_mask.png'))
+            transform(im).save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_blur_9', f'{batch_idx}_gt.png'))
+            im = Image.fromarray(pred1)
+            transform(im).save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_blur_9', f'{batch_idx}_{self.model_name1}_pred.png'))
+            im = Image.fromarray(pred2)
+            transform(im).save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_blur_9', f'{batch_idx}_{self.model_name2}_pred.png'))
+            # im = Image.fromarray(mask)
+            # transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_mask.png'))
 
 
-        for pred, target, mask in zip(normal_preds, normal_gt, mask_valid):
+        for pred, target, mask in zip(normal_preds1, normal_gt, mask_valid):
             metrics = get_metrics(pred.cpu().unsqueeze(0), target.cpu().unsqueeze(0), \
                 masks=mask.cpu().unsqueeze(0), task='normal')
+            if metrics is None:
+                print("!!!!!!! none mertrics") 
+                continue
             for metric_name, metric_val in metrics.items(): 
-                self.metrics[metric_name].push(metric_val)
+                self.metrics1[metric_name].push(metric_val)
+
+        for pred, target, mask in zip(normal_preds2, normal_gt, mask_valid):
+            metrics = get_metrics(pred.cpu().unsqueeze(0), target.cpu().unsqueeze(0), \
+                masks=mask.cpu().unsqueeze(0), task='normal')
+            if metrics is None:
+                print("!!!!!!! none mertrics") 
+                continue
+            for metric_name, metric_val in metrics.items(): 
+                self.metrics2[metric_name].push(metric_val)
     
 
     def make_valid_mask(self, mask_float, max_pool_size=4, return_small_mask=False):
@@ -337,15 +447,23 @@ if __name__ == '__main__':
     print(result)
 
     metrics = {}
-    for metric_name, metric_val in model.metrics.items(): 
+    for metric_name, metric_val in model.metrics1.items(): 
         print(f"\t{metric_name}: {metric_val.mean()} ({math.sqrt(metric_val.variance())})")
         metrics[metric_name] = metric_val.mean()
         metrics[metric_name + "_std"] = math.sqrt(metric_val.variance())
 
-    print("metrics : ", metrics)
+    print("metrics1 : ", metrics)
 
-    os.makedirs(os.path.join('results'), exist_ok=True)
-    metrics_file = os.path.join('results', f'metrics_normal_{model.test_datasets[0]}_model_{model.model_name}.json')
+    metrics = {}
+    for metric_name, metric_val in model.metrics2.items(): 
+        print(f"\t{metric_name}: {metric_val.mean()} ({math.sqrt(metric_val.variance())})")
+        metrics[metric_name] = metric_val.mean()
+        metrics[metric_name + "_std"] = math.sqrt(metric_val.variance())
 
-    with open(metrics_file, 'w') as json_file:
-        json.dump(metrics, json_file)
+    print("metrics2 : ", metrics)
+
+    # os.makedirs(os.path.join('results'), exist_ok=True)
+    # metrics_file = os.path.join('results', f'metrics_normal_{model.test_datasets[0]}_model_{model.model_name}.json')
+
+    # with open(metrics_file, 'w') as json_file:
+    #     json.dump(metrics, json_file)

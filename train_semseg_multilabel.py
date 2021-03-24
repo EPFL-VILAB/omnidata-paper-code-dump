@@ -90,6 +90,7 @@ class SemanticSegmentation(pl.LightningModule):
         self.use_gso = use_gso
         self.use_hypersim = use_hypersim
 
+        self.normalize_rgb = True
         self.setup_datasets()
         self.val_samples = self.select_val_samples_for_datasets()
         self.log_val_imgs_step = 0
@@ -99,7 +100,7 @@ class SemanticSegmentation(pl.LightningModule):
         # self.model = get_configured_hrnet(n_classes=len(COMBINED_CLASS_LABELS)-1,\
         #      load_imagenet_model=True, imagenet_ckpt_fpath='/scratch/ainaz/omnidata2/pretrained/hrnet_w48-8ef0771d.pth')
         # self.model = UNet(in_channels=3, out_channels=len(COMBINED_CLASS_LABELS)-1)
-        self.model = MultiTaskModel(tasks=['segment_semantic'], n_channels=10, \
+        self.model = MultiTaskModel(tasks=['segment_semantic'], n_channels=6, \
             backbone='hrnet_w18', head='hrnet', pretrained=False, dilated=False)
 
         if self.pretrained_weights_path is not None:
@@ -182,25 +183,22 @@ class SemanticSegmentation(pl.LightningModule):
 
         self.val_datasets = ['taskonomy', 'replica', 'hypersim']
         # tasks = ['rgb', 'segment_semantic', 'mask_valid']
+        tasks = ['rgb', 'normal', 'segment_semantic', 'mask_valid']
         # tasks = ['rgb', 'normal', 'segment_semantic', 'edge_occlusion', 'mask_valid']
-        # tasks = ['rgb', 'normal', 'segment_semantic', 'edge_texture', 'depth_zbuffer', 'mask_valid']
-        # tasks = ['rgb', 'normal', 'segment_semantic', 'edge_occlusion', 'depth_zbuffer', 'mask_valid']
-        # tasks = ['rgb', 'normal', 'segment_semantic', 'edge_occlusion', 'edge_texture', 'depth_zbuffer', 'mask_valid']
-        tasks = ['rgb', 'normal', 'segment_semantic', 'edge_occlusion', 'edge_texture', 'keypoints3d', \
-            'depth_zbuffer', 'mask_valid']
+        # tasks = ['rgb', 'normal', 'segment_semantic', 'edge_occlusion', 'edge_texture', 'keypoints3d', 'depth_zbuffer', 'mask_valid']
         
-        opt_train_taskonomy = TaskonomyReplicaGsoDataset.Options(
-            tasks=tasks,
-            datasets=['taskonomy'],
-            split='train',
-            taskonomy_variant=self.taskonomy_variant,
-            transform='DEFAULT',
-            image_size=self.image_size,
-            normalize_rgb=True,
-            randomize_views=True
-        )
+        # opt_train_taskonomy = TaskonomyReplicaGsoDataset.Options(
+        #     tasks=tasks,
+        #     datasets=['taskonomy'],
+        #     split='train',
+        #     taskonomy_variant=self.taskonomy_variant,
+        #     transform='DEFAULT',
+        #     image_size=self.image_size,
+        #     normalize_rgb=self.normalize_rgb,
+        #     randomize_views=True
+        # )
         
-        self.trainset_taskonomy = TaskonomyReplicaGsoDataset(options=opt_train_taskonomy)
+        # self.trainset_taskonomy = TaskonomyReplicaGsoDataset(options=opt_train_taskonomy)
 
         opt_train_replica = TaskonomyReplicaGsoDataset.Options(
             tasks=tasks,
@@ -209,24 +207,24 @@ class SemanticSegmentation(pl.LightningModule):
             taskonomy_variant=self.taskonomy_variant,
             transform='DEFAULT',
             image_size=self.image_size,
-            normalize_rgb=True,
+            normalize_rgb=self.normalize_rgb,
             randomize_views=True
         )
         
         self.trainset_replica = TaskonomyReplicaGsoDataset(options=opt_train_replica)
 
-        opt_train_hypersim = TaskonomyReplicaGsoDataset.Options(
-            tasks=tasks,
-            datasets=['hypersim'],
-            split='train',
-            taskonomy_variant=self.taskonomy_variant,
-            transform='DEFAULT',
-            image_size=self.image_size,
-            normalize_rgb=True,
-            randomize_views=True
-        )
+        # opt_train_hypersim = TaskonomyReplicaGsoDataset.Options(
+        #     tasks=tasks,
+        #     datasets=['hypersim'],
+        #     split='train',
+        #     taskonomy_variant=self.taskonomy_variant,
+        #     transform='DEFAULT',
+        #     image_size=self.image_size,
+        #     normalize_rgb=self.normalize_rgb,
+        #     randomize_views=True
+        # )
         
-        self.trainset_hypersim = TaskonomyReplicaGsoDataset(options=opt_train_hypersim)
+        # self.trainset_hypersim = TaskonomyReplicaGsoDataset(options=opt_train_hypersim)
 
         opt_val_taskonomy = TaskonomyReplicaGsoDataset.Options(
             split='val',
@@ -235,7 +233,7 @@ class SemanticSegmentation(pl.LightningModule):
             datasets=['taskonomy'],
             transform='DEFAULT',
             image_size=self.image_size,
-            normalize_rgb=True,
+            normalize_rgb=self.normalize_rgb,
             randomize_views=False
         )
 
@@ -249,7 +247,7 @@ class SemanticSegmentation(pl.LightningModule):
             datasets=['replica'],
             transform='DEFAULT',
             image_size=self.image_size,
-            normalize_rgb=True,
+            normalize_rgb=self.normalize_rgb,
             randomize_views=False
         )
 
@@ -263,7 +261,7 @@ class SemanticSegmentation(pl.LightningModule):
             datasets=['hypersim'],
             transform='DEFAULT',
             image_size=self.image_size,
-            normalize_rgb=True,
+            normalize_rgb=self.normalize_rgb,
             randomize_views=False
         )
 
@@ -273,20 +271,20 @@ class SemanticSegmentation(pl.LightningModule):
         print('Loaded training and validation sets:')
         # print(f'Train set contains {len(self.trainset)} samples.')
         # print(f'Validation set (combined) contains {len(self.valset_combined)} samples.')
-        print(f'Train set (taskonomy) contains {len(self.trainset_taskonomy)} samples.')
+        # print(f'Train set (taskonomy) contains {len(self.trainset_taskonomy)} samples.')
         print(f'Train set (replica) contains {len(self.trainset_replica)} samples.')
-        print(f'Train set (hypersim) contains {len(self.trainset_hypersim)} samples.')
+        # print(f'Train set (hypersim) contains {len(self.trainset_hypersim)} samples.')
         print(f'Validation set (taskonomy) contains {len(self.valset_taskonomy)} samples.')
         print(f'Validation set (replica) contains {len(self.valset_replica)} samples.')
         print(f'Validation set (hypersim) contains {len(self.valset_hypersim)} samples.')
     
-    def train_dataloader_single(self):
+    def train_dataloader(self):
         return DataLoader(
-            self.trainset, batch_size=self.batch_size, shuffle=True, 
+            self.trainset_replica, batch_size=self.batch_size, shuffle=True, 
             num_workers=self.num_workers, pin_memory=False
         )
 
-    def train_dataloader(self):
+    def train_dataloader_multi(self):
         taskonomy_count = len(self.trainset_taskonomy)
         replica_count = len(self.trainset_replica)
         hypersim_count = len(self.trainset_hypersim)
@@ -376,18 +374,13 @@ class SemanticSegmentation(pl.LightningModule):
         criterion = nn.CrossEntropyLoss(ignore_index=-1)
         rgb = batch['positive']['rgb']
         normal = batch['positive']['normal']
-        depth = batch['positive']['depth_zbuffer']
-        edge_occlusion = batch['positive']['edge_occlusion']
-        edge_texture = batch['positive']['edge_texture']
-        keypoints3d = batch['positive']['keypoints3d']
+        # depth = batch['positive']['depth_zbuffer']
+        # edge_occlusion = batch['positive']['edge_occlusion']
+        # edge_texture = batch['positive']['edge_texture']
+        # keypoints3d = batch['positive']['keypoints3d']
         semantic = batch['positive']['segment_semantic']
         mask_valid = self.make_valid_mask(batch['positive']['mask_valid']).squeeze(1)
 
-        ##### GSO classes : 2**8 * r + g
-        # building_in_gso_vectorized = np.vectorize(building_in_gso)
-        # gso_buildings = 1 * torch.tensor(building_in_gso_vectorized(batch['positive']['building'])).to(semantic.device)
-        # gso_buildings = gso_buildings.reshape(gso_buildings.shape[0], 1, 1).repeat_interleave(self.image_size,1).repeat_interleave(self.image_size,2)
-        # labels_gt = (1-gso_buildings) * semantic[:,:,:,0] + gso_buildings * (2**8 * semantic[:,:,:,0] + semantic[:,:,:,1])
         labels_gt = semantic[:,:,:,0]
 
         # background and undefined classes are labeled as 0
@@ -399,11 +392,9 @@ class SemanticSegmentation(pl.LightningModule):
         labels_gt -= 1  # the model should not predict undefined and background classes
 
         # Forward pass 
+        combo_input = torch.cat([rgb, normal], dim=1)
         # combo_input = torch.cat([rgb, normal, edge_occlusion], dim=1)
-        # combo_input = torch.cat([rgb, normal, depth, edge_texture], dim=1)
-        # combo_input = torch.cat([rgb, normal, depth, edge_occlusion], dim=1)
-        # combo_input = torch.cat([rgb, normal, depth, edge_texture, edge_occlusion], dim=1)
-        combo_input = torch.cat([rgb, normal, depth, edge_texture, edge_occlusion, keypoints3d], dim=1)
+        # combo_input = torch.cat([rgb, normal, depth, edge_texture, edge_occlusion, keypoints3d], dim=1)
 
         labels_preds = self(combo_input)
 
@@ -437,7 +428,7 @@ class SemanticSegmentation(pl.LightningModule):
             self.log(f'val_{loss_name}', losses[loss_name], prog_bar=False, logger=True, sync_dist=self.gpus>1)
 
         # Log validation set and OOD debug images using W&B
-        if self.global_step >= self.log_val_imgs_step + 15000 or self.global_step <= 2000:
+        if self.global_step >= self.log_val_imgs_step + 19999 or self.global_step <= 2000:
             self.log_val_imgs_step = self.global_step
             self.log_validation_example_images(num_images=10)
             # self.log_ood_example_images(num_images=10)
@@ -482,10 +473,10 @@ class SemanticSegmentation(pl.LightningModule):
                 rgb = example['positive']['rgb'].to(self.device)
                 semantic = example['positive']['segment_semantic']
                 normal = example['positive']['normal'].to(self.device)
-                depth = example['positive']['depth_zbuffer'].to(self.device)
-                edge_texture = example['positive']['edge_texture'].to(self.device)
-                edge_occlusion = example['positive']['edge_occlusion'].to(self.device)
-                keypoints3d = example['positive']['keypoints3d'].to(self.device)
+                # depth = example['positive']['depth_zbuffer'].to(self.device)
+                # edge_texture = example['positive']['edge_texture'].to(self.device)
+                # edge_occlusion = example['positive']['edge_occlusion'].to(self.device)
+                # keypoints3d = example['positive']['keypoints3d'].to(self.device)
 
 
                 if dataset == 'gso': labels_gt = 2**8 * semantic[:,:,0] + semantic[:,:,1]
@@ -501,7 +492,7 @@ class SemanticSegmentation(pl.LightningModule):
                 if mask_valid.sum() == 0: continue
 
                 with torch.no_grad(): 
-                    combo_input = torch.cat([rgb, normal, depth, edge_texture, edge_occlusion, keypoints3d], dim=0)
+                    combo_input = torch.cat([rgb, normal], dim=0)
                     preds = self.model.forward(combo_input.unsqueeze(0))['segment_semantic'].squeeze(0)
 
                 # compute loss
@@ -590,13 +581,13 @@ class SemanticSegmentation(pl.LightningModule):
 
     
     def configure_optimizers(self):
-        # optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-4)
-        optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-4, weight_decay=1e-4)
+        # optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
         # optimizer = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=1e-4)
         # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self.lr_step, gamma=0.5)
-        lmbda = lambda epoch: (1 - (epoch/50)) ** 0.9 
-        scheduler = torch.optim.lr_scheduler.MultiplicativeLR(optimizer, lr_lambda=lmbda)
-        return [optimizer], [scheduler]
+        # lmbda = lambda epoch: (1 - (epoch/50)) ** 0.9 
+        # scheduler = torch.optim.lr_scheduler.MultiplicativeLR(optimizer, lr_lambda=lmbda)
+        return optimizer
     
     
 if __name__ == '__main__':
@@ -636,12 +627,12 @@ if __name__ == '__main__':
     # Save weights like ./checkpoints/taskonomy_semseg/W&BID/epoch-X.ckpt
     checkpoint_callback = ModelCheckpoint(
         filepath=os.path.join(checkpoint_dir, '{epoch}'),
-        verbose=True, monitor='val_semantic_loss', mode='min', period=1, save_last=True, save_top_k=20
+        verbose=True, monitor='val_replica_semantic_loss', mode='min', period=1, save_last=True, save_top_k=3
     )
     
     if args.restore is None:
         trainer = pl.Trainer.from_argparse_args(args, logger=wandb_logger, \
-            checkpoint_callback=checkpoint_callback, gpus=[0,1], auto_lr_find=False, accelerator='ddp', replace_sampler_ddp=False, gradient_clip_val=10)
+            checkpoint_callback=checkpoint_callback, gpus=[1], auto_lr_find=False, accelerator='ddp', replace_sampler_ddp=False, gradient_clip_val=10)
     else:
         trainer = pl.Trainer(
             resume_from_checkpoint=os.path.join(f'./checkpoints/{wandb_logger.name}/{args.restore}/last.ckpt'), 

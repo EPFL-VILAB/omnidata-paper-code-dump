@@ -1,0 +1,140 @@
+python train_normal.py --gpus 2 --val_check_interval 1000 --limit_val_batches 100 --max_epochs 800 --precision 32  \
+--taskonomy_variant tiny --batch_size 16 --num_workers 64 --experiment_name taskonomy-replica-gso-normal-scratch-v2 \
+--pretrained_weights_path /scratch/ainaz/omnidata2/exps/checkpoints/omnidata/14lai90c/epoch=6.ckpt
+
+
+python train_normal.py --gpus 2 --val_check_interval 1000 --limit_val_batches 100 --max_epochs 800 --precision 32  \
+--lr 1e-3 --taskonomy_variant tiny --batch_size 64 --image_size 256 --num_workers 64 --experiment_name taskonomy-replica-gso-hypersim-normal-lr_1e-3-clamped-size_256
+
+python test_normal.py --gpus 1 --precision 32 --batch_size 16 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/XTConsistency/models/rgb2normal_baseline.pth \
+--model_name full_baseline --image_size 256
+
+python test_depth.py --gpus 1 --precision 32 --batch_size 16 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/omnidata2/exps_depth/checkpoints/omnidata/wmdmldfp/epoch=9.ckpt \
+--model_name combined_lr_2e-4 --image_size 256
+
+python test_normal_video.py --model_name=taskonomy-replica-gso2 \
+--weights_path /scratch/ainaz/omnidata/exps/checkpoints/omnidata/1q7bgkis/epoch\=18.ckpt
+
+
+##### full baseline and consistency
+/scratch/ainaz/XTConsistency/models/rgb2normal_baseline.pth
+/scratch/ainaz/XTConsistency/models/rgb2depth_baseline.pth
+/scratch/ainaz/XTConsistency/models/rgb2normal_consistency.pth
+
+##### combined (normal)
+/scratch/ainaz/omnidata2/exps/checkpoints/omnidata/316lki4y/last.ckpt
+/scratch/ainaz/omnidata2/exps/checkpoints/omnidata/316lki4y/epoch=29.ckpt
+/scratch/ainaz/omnidata2/exps/checkpoints/omnidata/27u8yg0r/epoch=17.ckpt
+
+# with hypersim 
+256 : /scratch/ainaz/omnidata2/exps/checkpoints/omnidata/3ef56j3n/epoch=14.ckpt
+512 : /scratch/ainaz/omnidata2/exps/checkpoints/omnidata/2ym3eq90
+512 (clamped): /scratch/ainaz/omnidata2/exps/checkpoints/omnidata/2982byc3/epoch=17.ckpt
+
+##### tiny baseline (normal)
+512: /scratch/ainaz/omnidata2/exps/checkpoints/omnidata/14lai90c/epoch=26.ckpt
+512: /scratch/ainaz/omnidata2/exps/checkpoints/omnidata/3soci68w/epoch=15.ckpt
+
+256 : /scratch-data/ainaz/omnidata2/exps/checkpoints/omnidata/13imh6j4/epoch=50.ckpt
+
+##### tiny baseline (depth)
+/scratch/ainaz/omnidata2/exps_depth/checkpoints/omnidata/k15vz7sf/epoch=16.ckpt
+
+##### combined (depth)
+/scratch/ainaz/omnidata2/exps_depth/checkpoints/omnidata/wmdmldfp/epoch=9.ckpt
+
+
+
+python test_normal.py --gpus 1 --precision 32 --batch_size 1 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/omnidata2/exps/checkpoints/omnidata/2gz68k48/epoch=103.ckpt \
+--model_name combined_lr_1e-3_batchsize_256_ep_103 --image_size 256
+
+python train_normal_taskonomy.py --gpus 2 --val_check_interval 1000 --limit_val_batches 100 --max_epochs 800 \
+--precision 32 --lr 3e-5 --taskonomy_variant tiny --batch_size 32 --image_size 256 \
+--num_workers 64 --experiment_name taskonomy-tiny-lr_3e-5-size_256
+
+python train_semseg.py --gpus 1 --val_check_interval 1000 --limit_val_batches 100 --max_epochs 800 \
+--precision 32 --lr 1e-4 --lr_step 5 --taskonomy_variant tiny --batch_size 32 --image_size 256 \
+--num_workers 64 --loss_balancing grad_norm --experiment_name taskonomy-replica-hypersim-semseg-lr_1e-4-gradnorm
+
+python test_normal.py --gpus 1 --precision 32 --batch_size 4 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/omnidata2/exps/checkpoints/omnidata/2mfph4m1/epoch=11.ckpt \
+--model_name full_baseline_mine-lr_3e-5-size_256_ep_11 --image_size 256
+
+python test_normal.py --gpus 1 --precision 32 --batch_size 1 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/XTConsistency/models/rgb2normal_baseline.pth \
+--model_name full_baseline_paper --image_size 256
+
+python test_normal.py --gpus 1 --precision 32 --batch_size 1 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/omnidata2/exps/checkpoints/omnidata/3ef56j3n/epoch=157.ckpt \
+--model_name combined-size_256_ep_157 --image_size 256
+
+python test_normal.py --gpus 1 --precision 32 --batch_size 8 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/omnidata2/experiments/multitask/checkpoints/omnidata/180fgw3c/epoch=4-v5.ckpt \
+--model_name combined-hrnet-multitaskv2-size_512-ep_4 --image_size 512
+
+python test_normal.py --gpus 1 --precision 32 --batch_size 1 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/omnidata2/experiments/normal/checkpoints/omnidata/38wi2cae/epoch=13.ckpt \
+--model_name combined-hrnet-normal-size_512-ep_13 --image_size 512
+
+python test_normal.py --gpus 1 --precision 32 --batch_size 8 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/omnidata2/exps_semseg/checkpoints/omnidata/6gn5wa14/epoch=8.ckpt \
+--model_name combined-hrnet-multitaskv1-size_512-ep_8 --image_size 512
+
+python test_semseg.py --gpus 1 --precision 32 --batch_size 4 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/omnidata2/exps_semseg/checkpoints/omnidata/1l4ccfyq/epoch=5-v0.ckpt \
+--image_size 513 --model_name semseg_combined
+
+python test_semseg.py --gpus 1 --precision 32 --batch_size 4 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/omnidata2/exps_semseg/checkpoints/omnidata/6gn5wa14/epoch=7.ckpt \
+--image_size 512 --model_name multitask_combined
+
+python test_semseg.py --gpus 1 --precision 32 --batch_size 4 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/omnidata2/exps_semseg/checkpoints/omnidata/1ic50sib/epoch=18.ckpt \
+--image_size 512 --model_name semseg_hypersim
+
+
+python test_normal.py --gpus 1 --precision 32 --batch_size 1 --num_workers 64 \
+--pretrained_weights_path /scratch-data/ainaz/omnidata2/exps/checkpoints/omnidata/13imh6j4/epoch=50.ckpt \
+--model_name tiny_baseline --image_size 256
+
+/scratch-data/ainaz/omnidata2/exps/checkpoints/omnidata/13imh6j4/epoch=50.ckpt
+
+
+python eval_OASIS.py -iter 500 -t /scratch/ainaz/OASIS/OASIS_trainval/OASIS_val.csv \
+-pretrained_weights_path /scratch/ainaz/omnidata2/exps/checkpoints/omnidata/3ef56j3n/epoch=157.ckpt 
+
+python test_normal.py --gpus 1 --precision 32 --batch_size 1 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/omnidata2/experiments/normal/checkpoints/omnidata/49j20rhe/epoch=4.ckpt \
+--model_name full-combined-aug-size_256_ep_4 --image_size 256
+
+python test_normal.py --gpus 1 --precision 32 --batch_size 1 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/omnidata2/experiments/normal/checkpoints/omnidata/164bexct/epoch=4.ckpt \
+--model_name full-combined-no_aug-size_256_ep_4 --image_size 256
+
+python test_normal.py --gpus 1 --precision 32 --batch_size 1 --num_workers 64 \
+--pretrained_weights_path none \
+--model_name pretrained_SNOW-size_256 --image_size 256
+
+
+python test_normal.py --gpus 1 --precision 32 --batch_size 16 --num_workers 64 \
+--pretrained_weights_path /scratch/ainaz/XTConsistency/models/rgb2normal_baseline.pth \
+--model_name full_baseline_paper --image_size 256
+
+
+ffmpeg -i robotics3.mp4 frames/robotics2/rgb/input%05d.png
+
+ffmpeg -y -framerate 30 -pattern_type glob \
+       -i "frames/robotics3/normal_baseline/*.png" \
+       -c:v libx264 -crf 17  -pix_fmt yuv420p "robotics3_baseline.mp4";
+
+ffmpeg -y -framerate 30 -pattern_type glob \
+       -i "frames/robotics3/normal_aug/*.png" \
+       -c:v libx264 -crf 17  -pix_fmt yuv420p "robotics3_normal_aug.mp4";
+
+ffmpeg -y -framerate 30 -pattern_type glob \
+       -i "frames/robotics3/rgb_cropped/*.png" \
+       -c:v libx264 -crf 17  -pix_fmt yuv420p "robotics3_rgb.mp4";
+
