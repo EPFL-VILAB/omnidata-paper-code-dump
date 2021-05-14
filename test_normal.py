@@ -66,10 +66,10 @@ class NormalTest(pl.LightningModule):
         # self.pretrained_weights_path = pretrained_weights_path
         # no aug
         self.pretrained_weights_path1 = \
-            '/scratch/ainaz/omnidata2/experiments/normal/checkpoints/omnidata/164bexct/epoch=9.ckpt'
+            '/scratch/ainaz/omnidata2/experiments/normal/checkpoints/omnidata/164bexct/epoch=21.ckpt'
         # aug
         self.pretrained_weights_path2 = \
-            '/scratch/ainaz/omnidata2/experiments/normal/checkpoints/omnidata/49j20rhe/epoch=9.ckpt'
+            '/scratch/ainaz/omnidata2/experiments/normal/checkpoints/omnidata/49j20rhe/epoch=26.ckpt'
 
         self.image_size = image_size
         self.batch_size = batch_size
@@ -91,8 +91,8 @@ class NormalTest(pl.LightningModule):
         self.use_nyu = use_nyu
         self.use_oasis = use_oasis
         # self.model_name = model_name
-        self.model_name1 = 'full_combined'
-        self.model_name2 = 'full_combined_aug'
+        self.model_name1 = 'full-combined-no_aug-size_256_ep_21'
+        self.model_name2 = 'full-combined-aug-size_256_ep_26'
 
         self.save_debug_info_on_error = False
         self.normalize_rgb = False
@@ -174,7 +174,7 @@ class NormalTest(pl.LightningModule):
             '--oasis_root', type=str, default='/scratch/ainaz/OASIS/OASIS_trainval/image',
             help='Root directory of OASIS dataset.')
         parser.add_argument(
-            '--use_taskonomy', action='store_true', default=True,
+            '--use_taskonomy', action='store_true', default=False,
             help='Set to use taskonomy dataset.')
         parser.add_argument(
             '--use_replica', action='store_true', default=False,
@@ -189,7 +189,7 @@ class NormalTest(pl.LightningModule):
             '--use_nyu', action='store_true', default=False,
             help='Set to use NYU dataset.')
         parser.add_argument(
-            '--use_oasis', action='store_true', default=False,
+            '--use_oasis', action='store_true', default=True,
             help='Set to use OASIS dataset.')
         parser.add_argument(
             '--model_name', type=str, default='taskonomy-tiny',
@@ -271,13 +271,12 @@ class NormalTest(pl.LightningModule):
 
             self.testset_gso = TaskonomyReplicaGsoDataset(options=opt_test_gso)
 
-        # self.testset.randomize_order(seed=10)
 
-        print('Loaded test set:')
-        print(f'Test set (taskonomy) contains {len(self.testset_taskonomy)} samples.')
-        print(f'Test set (replica) contains {len(self.testset_replica)} samples.')
-        print(f'Test set (hypersim) contains {len(self.testset_hypersim)} samples.')
-        print(f'Test set (gso) contains {len(self.testset_gso)} samples.')
+            print('Loaded test set:')
+            print(f'Test set (taskonomy) contains {len(self.testset_taskonomy)} samples.')
+            print(f'Test set (replica) contains {len(self.testset_replica)} samples.')
+            print(f'Test set (hypersim) contains {len(self.testset_hypersim)} samples.')
+            print(f'Test set (gso) contains {len(self.testset_gso)} samples.')
 
 
     def test_dataloader(self):
@@ -311,10 +310,15 @@ class NormalTest(pl.LightningModule):
 
         elif self.use_oasis:
             rgb, normal_gt, mask_valid = batch
-            # mask_valid = mask_valid != 0
             mask_valid = build_mask_for_eval(target=mask_valid.cpu(), val=0.0)
-            normal_preds = self(rgb)
-            normal_preds = torch.clamp(normal_preds, 0, 1)
+            # Forward pass
+            # normal_preds = self(rgb)
+            # normal_preds = torch.clamp(normal_preds, 0, 1)
+            normal_preds1 = self.model1.forward(rgb)
+            normal_preds1 = torch.clamp(normal_preds1, 0, 1)
+            normal_preds2 = self.model2.forward(rgb)
+            normal_preds2 = torch.clamp(normal_preds2, 0, 1)
+
             
         else:     
             rgb = batch['positive']['rgb']
@@ -346,7 +350,7 @@ class NormalTest(pl.LightningModule):
             mask_valid = self.make_valid_mask(batch['positive']['mask_valid']).repeat_interleave(3,1)
 
         # save samples
-        if batch_idx % 10 == 0:
+        if batch_idx % 4 == 0:
             pred1 = np.uint8(255 * normal_preds1[0].cpu().permute((1, 2, 0)).numpy())
             pred2 = np.uint8(255 * normal_preds2[0].cpu().permute((1, 2, 0)).numpy())
 
@@ -358,35 +362,35 @@ class NormalTest(pl.LightningModule):
             mask = np.uint8(255 * mask_valid[0].cpu().permute((1, 2, 0)).numpy())
 
             transform = transforms.Resize(512, Image.NEAREST)
-            im = Image.fromarray(rgb)
-            transform(im).save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_blur_9', f'{batch_idx}_rgb.png'))
-            im = Image.fromarray(gt)
-            transform(im).save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_blur_9', f'{batch_idx}_gt.png'))
+            # im = Image.fromarray(rgb)
+            # transform(im).save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_blur_9', f'{batch_idx}_rgb.png'))
+            # im = Image.fromarray(gt)
+            # transform(im).save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_blur_9', f'{batch_idx}_gt.png'))
             im = Image.fromarray(pred1)
-            transform(im).save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_blur_9', f'{batch_idx}_{self.model_name1}_pred.png'))
+            transform(im).save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_full_noaug_ep21', f'{batch_idx}_{self.model_name1}_pred.png'))
             im = Image.fromarray(pred2)
-            transform(im).save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_blur_9', f'{batch_idx}_{self.model_name2}_pred.png'))
+            transform(im).save(os.path.join('test_images', 'normal', f'{self.test_datasets[0]}_full_aug_ep26', f'{batch_idx}_{self.model_name2}_pred.png'))
             # im = Image.fromarray(mask)
             # transform(im).save(os.path.join('test_images', 'normal', self.test_datasets[0], f'{batch_idx}_mask.png'))
 
 
-        for pred, target, mask in zip(normal_preds1, normal_gt, mask_valid):
-            metrics = get_metrics(pred.cpu().unsqueeze(0), target.cpu().unsqueeze(0), \
-                masks=mask.cpu().unsqueeze(0), task='normal')
-            if metrics is None:
-                print("!!!!!!! none mertrics") 
-                continue
-            for metric_name, metric_val in metrics.items(): 
-                self.metrics1[metric_name].push(metric_val)
+        # for pred, target, mask in zip(normal_preds1, normal_gt, mask_valid):
+        #     metrics = get_metrics(pred.cpu().unsqueeze(0), target.cpu().unsqueeze(0), \
+        #         masks=mask.cpu().unsqueeze(0), task='normal')
+        #     if metrics is None:
+        #         print("!!!!!!! none mertrics") 
+        #         continue
+        #     for metric_name, metric_val in metrics.items(): 
+        #         self.metrics1[metric_name].push(metric_val)
 
-        for pred, target, mask in zip(normal_preds2, normal_gt, mask_valid):
-            metrics = get_metrics(pred.cpu().unsqueeze(0), target.cpu().unsqueeze(0), \
-                masks=mask.cpu().unsqueeze(0), task='normal')
-            if metrics is None:
-                print("!!!!!!! none mertrics") 
-                continue
-            for metric_name, metric_val in metrics.items(): 
-                self.metrics2[metric_name].push(metric_val)
+        # for pred, target, mask in zip(normal_preds2, normal_gt, mask_valid):
+        #     metrics = get_metrics(pred.cpu().unsqueeze(0), target.cpu().unsqueeze(0), \
+        #         masks=mask.cpu().unsqueeze(0), task='normal')
+        #     if metrics is None:
+        #         print("!!!!!!! none mertrics") 
+        #         continue
+        #     for metric_name, metric_val in metrics.items(): 
+        #         self.metrics2[metric_name].push(metric_val)
     
 
     def make_valid_mask(self, mask_float, max_pool_size=4, return_small_mask=False):
@@ -446,21 +450,21 @@ if __name__ == '__main__':
     result =trainer.test(verbose=True, model=model)
     print(result)
 
-    metrics = {}
-    for metric_name, metric_val in model.metrics1.items(): 
-        print(f"\t{metric_name}: {metric_val.mean()} ({math.sqrt(metric_val.variance())})")
-        metrics[metric_name] = metric_val.mean()
-        metrics[metric_name + "_std"] = math.sqrt(metric_val.variance())
+    # metrics = {}
+    # for metric_name, metric_val in model.metrics1.items(): 
+    #     print(f"\t{metric_name}: {metric_val.mean()} ({math.sqrt(metric_val.variance())})")
+    #     metrics[metric_name] = metric_val.mean()
+    #     metrics[metric_name + "_std"] = math.sqrt(metric_val.variance())
 
-    print("metrics1 : ", metrics)
+    # print("metrics1 : ", metrics)
 
-    metrics = {}
-    for metric_name, metric_val in model.metrics2.items(): 
-        print(f"\t{metric_name}: {metric_val.mean()} ({math.sqrt(metric_val.variance())})")
-        metrics[metric_name] = metric_val.mean()
-        metrics[metric_name + "_std"] = math.sqrt(metric_val.variance())
+    # metrics = {}
+    # for metric_name, metric_val in model.metrics2.items(): 
+    #     print(f"\t{metric_name}: {metric_val.mean()} ({math.sqrt(metric_val.variance())})")
+    #     metrics[metric_name] = metric_val.mean()
+    #     metrics[metric_name + "_std"] = math.sqrt(metric_val.variance())
 
-    print("metrics2 : ", metrics)
+    # print("metrics2 : ", metrics)
 
     # os.makedirs(os.path.join('results'), exist_ok=True)
     # metrics_file = os.path.join('results', f'metrics_normal_{model.test_datasets[0]}_model_{model.model_name}.json')

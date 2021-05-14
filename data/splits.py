@@ -68,3 +68,7 @@ gso_flat_split_to_buildings = get_splits(gso_split_file)
 hypersim_split_file = os.path.join(os.path.dirname(__file__), 'splits', 'train_val_test_hypersim.csv')
 hypersim_flat_split_to_buildings = get_splits(hypersim_split_file)
 
+# blendedMVS
+blendedMVS_split_file = os.path.join(os.path.dirname(__file__), 'splits', 'train_val_test_blendedMVS.csv')
+blendedMVS_flat_split_to_buildings = get_splits(blendedMVS_split_file)
+

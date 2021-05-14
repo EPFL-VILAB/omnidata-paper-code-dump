@@ -16,12 +16,13 @@ import torch
 import torch.utils.data as data
 import torch.nn.functional as F
 from   torchvision import transforms
+import torchvision.transforms.functional as TF
 from   typing import Optional, List, Callable, Union, Dict, Any
 import warnings
 
 from .taskonomy_dataset import parse_filename, LabelFile, View
 from .splits import taskonomy_flat_split_to_buildings, replica_flat_split_to_buildings, \
-    gso_flat_split_to_buildings, hypersim_flat_split_to_buildings
+    gso_flat_split_to_buildings, hypersim_flat_split_to_buildings, blendedMVS_flat_split_to_buildings
 from .transforms import default_loader, get_transform, LocalContrastNormalization
 from .task_configs import task_parameters, SINGLE_IMAGE_TASKS
 from .segment_instance import HYPERSIM_LABEL_TRANSFORM, REPLICA_LABEL_TRANSFORM, COMBINED_CLASS_LABELS
@@ -80,6 +81,7 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
         replica_data_path: str = '/scratch/ainaz/replica-taskonomized'
         gso_data_path: str = '/scratch/ainaz/replica-google-objects'
         hypersim_data_path: str = '/scratch/ainaz/hypersim-dataset2/evermotion/scenes'
+        blendedMVS_data_path: str = '/scratch/ainaz/BlendedMVS/mvs_low_res_taskonomized'
         split: str = 'train'
         taskonomy_variant: str = 'tiny'
         tasks: List[str] = field(default_factory=lambda: ['rgb'])
@@ -91,6 +93,7 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
         force_refresh_tmp: bool = False
         load_building_meshes: bool = False
         randomize_views: bool = True
+
 
     def load_datasets(self, options):
         # Load saved image locations if they exist, otherwise create and save them
@@ -157,6 +160,11 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                                              self.hypersim_data_path, task, self.split) 
                                         for task in options.tasks}
 
+                elif dataset == 'blendedMVS':
+                    dataset_urls = {task: make_blendedMVS_dataset(
+                                             self.blendedMVS_data_path, task, self.blendedMVS_buildings) 
+                                        for task in options.tasks}
+
                 dataset_urls, dataset_size  = self._remove_unmatched_images(dataset_urls)
 
                 for task, urls in dataset_urls.items():
@@ -180,6 +188,7 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
         self.replica_data_path = options.replica_data_path
         self.gso_data_path = options.gso_data_path
         self.hypersim_data_path = options.hypersim_data_path
+        self.blendedMVS_data_path = options.blendedMVS_data_path
         self.datasets = options.datasets
         self.split = options.split
         self.image_size = options.image_size
@@ -193,6 +202,8 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
         self.replica_buildings = replica_flat_split_to_buildings[self.split]
         self.gso_buildings = gso_flat_split_to_buildings[self.split]
         self.hypersim_buildings = hypersim_flat_split_to_buildings[self.split]
+        self.blendedMVS_buildings = blendedMVS_flat_split_to_buildings[self.split]
+
 
         self.load_datasets(options)
 
@@ -202,7 +213,7 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
         self.transform = options.transform
         if isinstance(self.transform, str):
             if self.transform == 'DEFAULT':
-                self.transform = {task: get_transform(task, self.image_size) for task in self.tasks}
+                self.transform = {task: get_transform(task, image_size=None) for task in self.tasks}
             else:
                 raise ValueError('TaskonomyDataset option transform must be a Dict[str, Callable], None, or "DEFAULT"')
                 
@@ -239,6 +250,8 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                     building = url.split('/')[-5] + '-' + url.split('/')[-3]
                 elif url.__contains__('taskonomy'):
                     building = url.split('/')[-2]
+                elif url.__contains__('BlendedMVS'):
+                    building = url.split('/')[-3]
                 else:
                     raise NotImplementedError('Dataset path (url) not recognized!')
 
@@ -329,31 +342,56 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
         return len(self.bpv_list)
 
     def __getitem__(self, index):
-        
+        flip = random.random() > 0.5 
         result = {}
         
         # Anchor building / point / view
         building, point, view = self.bpv_list[index]
         
         positive_views = [view]
-        positive_samples = {}
-        
-        for task in self.tasks:
+        positive_samples = {}   
+
+        for task_num, task in enumerate(self.tasks):
+            resize_method = Image.BILINEAR if task in ['rgb'] else Image.NEAREST
             task_samples = []
             for v in positive_views:
                 path = self.url_dict[(task, building, point, v)]
                 res = default_loader(path)
 
                 # additional transform for hypersim dataset because img size is (768, 1024)
-                if path.__contains__('hypersim'):
-                    resize_method = Image.BILINEAR if task in ['rgb'] else Image.NEAREST
-                    transform = transforms.Compose([
-                        transforms.Resize(self.image_size, resize_method), 
-                        transforms.CenterCrop(self.image_size)])
-                    res = transform(res)
+                # if path.__contains__('hypersim'):
+                #     if self.resize_method == 'resize' and h > w:
+                #         transform = transforms.Compose([
+                #             transforms.Resize(self.image_size, resize_method), 
+                #             transforms.CenterCrop(self.image_size)])
+                #     else:
+                #         transform = transforms.Compose([
+                #             transforms.Resize(self.image_size, resize_method)])
+                #     res = transform(res)
 
                 if self.transform is not None and self.transform[task] is not None:
-                    res = self.transform[task](res)
+
+                    if path.__contains__('hypersim') or path.__contains__('BlendedMVS'):
+                        resize_transform = transforms.Resize(self.image_size, resize_method)
+                        res = resize_transform(res)
+                        if task_num == 0: 
+                            i, j, h, w = transforms.RandomCrop.get_params(
+                                res, output_size=(self.image_size, self.image_size))
+                        res = TF.crop(res, i, j, h, w)
+                        res = self.transform[task](res)
+
+                    else:
+                        transform = transforms.Compose([
+                            transforms.Resize(self.image_size, resize_method),
+                            transforms.CenterCrop(self.image_size),
+                            self.transform[task]])
+                        res = transform(res)
+                    
+
+                # flip augmentation
+                if flip: 
+                    res = torch.flip(res, [2])
+                    if task == 'normal': res[0,:,:] = 1 - res[0,:,:]
 
                 # transforms for converting replica and hypersim labels to combined labels
                 if task == 'segment_semantic':
@@ -431,6 +469,8 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                     building = url.split('/')[-5] + '-' + url.split('/')[-3]
                 elif url.__contains__('taskonomy'):
                     building = url.split('/')[-2]
+                elif url.__contains__('BlendedMVS'):
+                    building = url.split('/')[-3]
                 # building = os.path.basename(os.path.dirname(path))
                 file_name = os.path.basename(path) 
                 lf = parse_filename( file_name )
@@ -561,6 +601,25 @@ def make_hypersim_dataset_orig_split(dir, task, split):
                     images.append(path)
 
         print(len(images))
+
+    return images
+
+def make_blendedMVS_dataset(dir, task, folders=None):
+    if task == 'segment_semantic': task = 'semantic'
+    #  folders are building names. 
+    images = []
+    dir = os.path.expanduser(dir)
+    if not os.path.isdir(dir):
+        assert "bad directory"
+    
+    if folders is None:
+        folders = os.listdir(dir)
+
+    for folder in folders:
+        folder_path = os.path.join(dir, folder, task)
+        for fname in sorted(os.listdir(folder_path)):
+            path = os.path.join(folder_path, fname)
+            images.append(path)
 
     return images
 

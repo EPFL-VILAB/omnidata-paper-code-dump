@@ -11,6 +11,7 @@ import itertools
 from functools import partial
 import PIL
 from PIL import Image
+import itertools as it
 
 import time
 import torch
@@ -19,12 +20,14 @@ import torch.nn.functional as F
 import torchvision
 import torchvision.transforms.functional as tvf
 import torch.utils.data as data
-
+import torchvision.transforms as transforms
 
 from tqdm import tqdm
-
 from models.unet import UNet
-import torchvision.transforms as transforms
+
+# os.chdir('/scratch/sasha/')
+sys.path.append('/scratch/sasha/')
+import soda as tta
 
 
 # torch.manual_seed(229) # cpu  vars
@@ -36,8 +39,8 @@ import IPython
 # pretrained_weights_path = \
 #             '/scratch/ainaz/omnidata2/experiments/normal/checkpoints/omnidata/164bexct/epoch=9.ckpt'
 # aug
-pretrained_weights_path = \
-    '/scratch/ainaz/omnidata2/experiments/normal/checkpoints/omnidata/49j20rhe/epoch=11.ckpt'
+# pretrained_weights_path = \
+#     '/scratch/ainaz/omnidata2/experiments/normal/checkpoints/omnidata/49j20rhe/epoch=11.ckpt'
 
 # tiny + combined
 # pretrained_weights_path = \
@@ -47,12 +50,18 @@ pretrained_weights_path = \
 # pretrained_weights_path = \
 #     '/scratch/ainaz/XTConsistency/models/rgb2normal_baseline.pth'
 
-video_name = 'robotics3'
+
+pretrained_weights_path = \
+    '/scratch/ainaz/omnidata2/experiments/normal/checkpoints/omnidata/3i8uv0k8/backup9.ckpt'
+
+video_name = 'food1'
 # 'loving_vincent' '03' WhiteHouse_Tour Trump Manouchehri St_Peter 01 Air_Force oval_office Hail_Chief1
 
 
 FRAME_DIR = f'/scratch/ainaz/videos/frames/{video_name}/rgb'  
-OUTPUT_DIR = f'/scratch/ainaz/videos/frames/{video_name}/normal_aug'  
+OUTPUT_DIR = f'/scratch/ainaz/videos/frames/{video_name}/normal_l1_cos_loss'  
+
+IMG_SIZE = 512
 
 
 class ImageDataset(data.Dataset):
@@ -65,7 +74,7 @@ class ImageDataset(data.Dataset):
                 + glob.glob(f"{data_dir}/*.jpg") 
                 + glob.glob(f"{data_dir}/*.jpeg")
             )
-        size = 256
+        size = IMG_SIZE
         self.crop_rgb_transform = transforms.Compose([
             transforms.Resize(size, interpolation=PIL.Image.NEAREST), 
             transforms.CenterCrop(size)]
@@ -76,7 +85,7 @@ class ImageDataset(data.Dataset):
     def __len__(self):
         return len(self.files)
 
-    def file_loader(self, path, resize=256, crop=None, seed=0):
+    def file_loader(self, path, resize=IMG_SIZE, crop=None, seed=0):
         image_transform = self.load_image_transform(resize=resize, crop=crop, seed=seed)
 
         im = Image.open(open(path, 'rb'))
@@ -84,7 +93,7 @@ class ImageDataset(data.Dataset):
 
         return image_transform(Image.open(open(path, 'rb')))[0:3]
 
-    def load_image_transform(self, resize=256, crop=None, seed=0):
+    def load_image_transform(self, resize=IMG_SIZE, crop=None, seed=0):
 
         size = resize
         random.seed(seed)
@@ -174,8 +183,8 @@ def make_predict_fn(model, percep_model, multitask_slice=None):
     def thunk_(data):
         
         with torch.no_grad():
-            # preds = model.predict_on_batch(data).clamp(min=0, max=1)
-            preds = model.forward(data.cuda()).clamp(min=0, max=1)
+            # preds = model.forward(data.cuda()).clamp(min=0, max=1)
+            preds = model(data.cuda()).clamp(min=0, max=1)
 
         return preds.detach().cpu()
     return thunk_
@@ -188,7 +197,7 @@ def run_viz_suite(name, data_loader, dest_task='normal',
                   just_return_model=False, reduce_flicker_kwargs=DEFAULT_REDUCE_FLICKER_KWARGS,
                   ):
     
-    model = UNet(in_channels=3, out_channels=3).cuda()
+    unet = UNet(in_channels=3, out_channels=3).cuda()
     checkpoint = torch.load(pretrained_weights_path, map_location='cuda:0')
     # In case we load a checkpoint from this LightningModule
     if 'state_dict' in checkpoint:
@@ -197,7 +206,38 @@ def run_viz_suite(name, data_loader, dest_task='normal',
             state_dict[k.replace('model.', '')] = v
     else:
         state_dict = checkpoint
-    model.load_state_dict(state_dict)
+    unet.load_state_dict(state_dict)
+
+
+    ######### TTA
+    crop_transforms = tta.Product(
+        [
+            tta.SurfaceNormalHorizontalFlip(dim_horizontal=0),
+            # tta.HorizontalFlip(),
+            tta.FiveCrops(0.9),
+            tta.ResizeShortestEdge([512, 256]),
+            # tta.ResizeShortestEdge([512]),
+        ]
+    )
+    whole_transforms = tta.Product(
+        [
+            tta.SurfaceNormalHorizontalFlip(dim_horizontal=0),
+            tta.ResizeShortestEdge([512, 256, 320, 384, 448]),
+            # tta.ResizeShortestEdge([512], interpolation='nearest'),
+        ]
+    )
+    transforms = whole_transforms
+    transforms = list(it.chain(crop_transforms, whole_transforms))
+
+    def model_fn(x):
+        output_var = unet(x) #* 2 - 1
+        # output_var[:,2,:,:] *= -1 
+        # output_var = torch.nn.functional.normalize(output_var, p=2, dim=1)
+        return output_var
+    
+    wrapper = tta.SurfaceNormalsTTAWrapper(model=model_fn, transforms=transforms, run_mode='parallel_apply', merger_fn=tta.MedianMerger)
+    model = lambda x: torch.nn.functional.normalize(wrapper(x), p=2, dim=1)
+    #############
 
 
     # DATA LOADING 1
@@ -327,7 +367,7 @@ def translate(x):
 
 
 def make_video(frame_dir=FRAME_DIR,
-               batch_size = 64,
+               batch_size = 8,
                n_workers  = 16,
                config_to_run='rgb2principal_curvature',
                output_dir=OUTPUT_DIR):
