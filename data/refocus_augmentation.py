@@ -189,7 +189,7 @@ def RefocusImageAugmentation(n_quantiles, aperture_min, aperture_max, return_seg
             quantile_vals = quantile_vals.permute(1, 0)
 
             focus_dist_idxs = torch.randint(low=1, high=n_quantiles, size=(rgb.shape[0],), device=device)
-            focus_dists = torch.gather(quantile_vals, 1, focus_dist_idxs.unsqueeze(0)).permute(1,0)
+            focus_dists = torch.gather(quantile_vals, 1, focus_dist_idxs.unsqueeze(1))#.permute(1,0)
 
             log_min = torch.log(torch.tensor(aperture_min, device=device))
             log_max = torch.log(torch.tensor(aperture_max, device=device))
