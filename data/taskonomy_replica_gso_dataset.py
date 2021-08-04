@@ -156,8 +156,17 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                     # dataset_urls = {task: make_hypersim_dataset(
                     #                          self.hypersim_data_path, task, self.hypersim_buildings) 
                     #                     for task in options.tasks}
+                    def hypersim_task_map(task):
+                        if task == 'normal':
+                            return 'normal2'
+                        elif task == 'mask_valid':
+                            return 'mask_valid2'
+                        elif task == 'depth_zbuffer':
+                            return 'depth_zbuffer2'
+                        else:
+                            return task
                     dataset_urls = {task: make_hypersim_dataset_orig_split(
-                                             self.hypersim_data_path, task if task != 'normal' else 'normal2', self.split) 
+                                             self.hypersim_data_path, hypersim_task_map(task), self.split) 
                                         for task in options.tasks}
 
                 elif dataset == 'blendedMVS':
