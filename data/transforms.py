@@ -132,7 +132,7 @@ def default_loader(path):
         with open(path, 'r') as f:
             data_dict = json.load(f)
             data_dict['building'] = os.path.basename(os.path.dirname(path))
-            data_dict.pop('nonfixated_points_in_view')
+            #data_dict.pop('nonfixated_points_in_view')
 #             new_data = {}
 #             new_data['camera_location'] = data_dict['camera_location']
 #             new_data['camera_rotation_final'] = data_dict['camera_rotation_final']

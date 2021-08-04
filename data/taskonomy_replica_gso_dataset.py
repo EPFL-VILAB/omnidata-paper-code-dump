@@ -157,7 +157,7 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                     #                          self.hypersim_data_path, task, self.hypersim_buildings) 
                     #                     for task in options.tasks}
                     dataset_urls = {task: make_hypersim_dataset_orig_split(
-                                             self.hypersim_data_path, task, self.split) 
+                                             self.hypersim_data_path, task if task != 'normal' else 'normal2', self.split) 
                                         for task in options.tasks}
 
                 elif dataset == 'blendedMVS':
@@ -390,7 +390,8 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
 
                 # flip augmentation
                 if flip: 
-                    res = torch.flip(res, [2])
+                    if task != 'point_info':
+                        res = torch.flip(res, [2])
                     if task == 'normal': res[0,:,:] = 1 - res[0,:,:]
 
                 # transforms for converting replica and hypersim labels to combined labels
@@ -414,6 +415,7 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
             positive_samples[task] = task_samples
         
         positive_samples['point'] = point
+        positive_samples['view'] = view
         positive_samples['building'] = building
         result['positive'] = positive_samples
         
