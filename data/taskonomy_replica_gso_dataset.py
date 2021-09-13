@@ -82,6 +82,7 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
         gso_data_path: str = '/scratch/ainaz/replica-google-objects'
         hypersim_data_path: str = '/scratch/ainaz/hypersim-dataset2/evermotion/scenes'
         blendedMVS_data_path: str = '/scratch/ainaz/BlendedMVS/mvs_low_res_taskonomized'
+        habitat2_data_path: str = '/scratch/ainaz/habitat2/'
         split: str = 'train'
         taskonomy_variant: str = 'tiny'
         tasks: List[str] = field(default_factory=lambda: ['rgb'])
@@ -173,6 +174,11 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                     dataset_urls = {task: make_blendedMVS_dataset(
                                              self.blendedMVS_data_path, task, self.blendedMVS_buildings) 
                                         for task in options.tasks}
+                    
+                elif dataset == 'habitat2':
+                    dataset_urls = {task: make_habitat2_dataset(
+                                             self.habitat2_data_path, task, self.split) 
+                                        for task in options.tasks}
 
                 dataset_urls, dataset_size  = self._remove_unmatched_images(dataset_urls)
 
@@ -198,6 +204,7 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
         self.gso_data_path = options.gso_data_path
         self.hypersim_data_path = options.hypersim_data_path
         self.blendedMVS_data_path = options.blendedMVS_data_path
+        self.habitat2_data_path = options.habitat2_data_path
         self.datasets = options.datasets
         self.split = options.split
         self.image_size = options.image_size
@@ -260,6 +267,8 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                 elif url.__contains__('taskonomy'):
                     building = url.split('/')[-2]
                 elif url.__contains__('BlendedMVS'):
+                    building = url.split('/')[-3]
+                elif url.__contains__('habitat2'):
                     building = url.split('/')[-3]
                 else:
                     raise NotImplementedError('Dataset path (url) not recognized!')
@@ -482,6 +491,8 @@ class TaskonomyReplicaGsoDataset(data.Dataset):
                     building = url.split('/')[-2]
                 elif url.__contains__('BlendedMVS'):
                     building = url.split('/')[-3]
+                elif url.__contains__('habitat2'):
+                    building = url.split('/')[-3]
                 # building = os.path.basename(os.path.dirname(path))
                 file_name = os.path.basename(path) 
                 lf = parse_filename( file_name )
@@ -632,6 +643,23 @@ def make_blendedMVS_dataset(dir, task, folders=None):
             path = os.path.join(folder_path, fname)
             images.append(path)
 
+    return images
+
+def make_habitat2_dataset(dir, task, split):
+    dir = os.path.join(dir, split)
+    dir = os.path.expanduser(dir)
+    if not os.path.isdir(dir):
+        assert "bad directory"
+        
+    folders = os.listdir(dir)
+    
+    images = []
+    for folder in folders:
+        folder_path = os.path.join(dir, folder, task)
+        for fname in sorted(os.listdir(folder_path)):
+            path = os.path.join(folder_path, fname)
+            images.append(path)
+    
     return images
 
 

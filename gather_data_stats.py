@@ -13,8 +13,8 @@ def load_pickle(path):
 
     
 # Create datasets
-dataset_names = ['taskonomy', 'hypersim', 'replica', 'gso'] # 'taskonomy', 'hypersim', 'replica', 'gso'
-splits = ['train', 'val', 'test'] # 'train', 'val', 'test'
+dataset_names = ['habitat2'] # 'taskonomy', 'hypersim', 'replica', 'gso', 'habitat2'
+splits = ['train', 'val'] # 'train', 'val', 'test'
 image_size = 512
 batch_size = 16
 
